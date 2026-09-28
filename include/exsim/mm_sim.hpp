@@ -155,7 +155,8 @@ inline Result run(const md::Capture& cap, const Config& cfg) {
     for (int k = 0; k < 2; ++k)
       if (quote[k].active)
         QuoteLogic::on_level_change(quote[k], before[k],
-                                    static_cast<double>(mirror.qty_at(k == 0 ? Side::Buy : Side::Sell, quote[k].px)));
+                                    static_cast<double>(mirror.qty_at(k == 0 ? Side::Buy : Side::Sell, quote[k].px)),
+                                    cfg.cancel_power);
     // the market moved to or through us: filled in full at our price
     if (quote[0].active && quote[0].px >= best_ask()) {
       const std::uint64_t f = quote[0].remaining;

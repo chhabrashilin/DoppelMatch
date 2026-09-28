@@ -10,6 +10,7 @@
 //   --requote-ticks T         move a live quote only if its target moved >= T ticks   [2]
 //   --latency-ms MS           decision-to-market latency                    [10]
 //   --fee-bps B               fee per fill on notional; negative = rebate   [0]
+//   --cancel-power N          cancellation split ahead/behind our quote: 1 proportional, 3 power rule  [1]
 //   --json                    print one machine-readable line and nothing else
 //   --calibrate FILE          instead of simulating, write trade depth data (for estimating k)
 //
@@ -59,13 +60,13 @@ void calibrate(const md::Capture& cap, const std::string& path) {
 void print_json(const mm::Result& R, const char* name) {
   std::printf(
       "{\"strategy\":\"%s\",\"fill\":\"%s\",\"gamma\":%g,\"k\":%g,\"tau\":%g,\"half_spread\":%g,\"latency_ms\":%g,"
-      "\"fee_bps\":%g,\"size_lots\":%llu,\"duration_s\":%.1f,\"fills\":%llu,\"buys\":%llu,\"sells\":%llu,"
+      "\"fee_bps\":%g,\"cancel_power\":%g,\"size_lots\":%llu,\"duration_s\":%.1f,\"fills\":%llu,\"buys\":%llu,\"sells\":%llu,"
       "\"volume_btc\":%.6f,\"notional\":%.2f,\"spread_capture\":%.4f,\"inventory_pnl\":%.4f,\"fees\":%.4f,"
       "\"total_pnl\":%.4f,\"max_abs_inv\":%.5f,\"mean_abs_inv\":%.5f,\"final_inv\":%.5f,\"edge_ticks\":%.4f,"
       "\"markout1\":%.4f,\"markout5\":%.4f,\"markout30\":%.4f,\"realized1\":%.4f,\"realized5\":%.4f,\"realized30\":%.4f,"
       "\"wait_s\":%.3f,\"live_frac\":%.4f,\"cancels\":%llu,\"post_only_rejects\":%llu,\"gaps\":%llu}\n",
       name, R.cfg.fill == mm::FillModel::Queue ? "queue" : "optimistic", R.cfg.gamma, R.cfg.k, R.cfg.tau_s,
-      R.cfg.half_spread_ticks, static_cast<double>(R.cfg.latency_ns) * 1e-6, R.cfg.fee_bps,
+      R.cfg.half_spread_ticks, static_cast<double>(R.cfg.latency_ns) * 1e-6, R.cfg.fee_bps, R.cfg.cancel_power,
       static_cast<unsigned long long>(R.cfg.size_lots), R.duration_s, static_cast<unsigned long long>(R.fills),
       static_cast<unsigned long long>(R.buys), static_cast<unsigned long long>(R.sells), R.volume_base, R.notional,
       R.spread_capture, R.inventory_pnl, R.fees, R.total_pnl, R.max_abs_inv, R.mean_abs_inv, R.final_inv, R.avg_edge_ticks,
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
   c.requote_ticks = static_cast<std::int64_t>(args.u64("requote-ticks", static_cast<std::uint64_t>(c.requote_ticks)));
   c.latency_ns = static_cast<std::uint64_t>(args.f64("latency-ms", 10) * 1e6);
   c.fee_bps = args.f64("fee-bps", c.fee_bps);
+  c.cancel_power = args.f64("cancel-power", c.cancel_power);
   c.warmup_ns = static_cast<std::uint64_t>(args.f64("warmup-s", 30) * 1e9);
 
   const mm::Result R = mm::run(cap, c);

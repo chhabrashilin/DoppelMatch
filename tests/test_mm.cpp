@@ -79,6 +79,28 @@ TEST(cancellations_are_prorated_and_trades_are_not_double_counted) {
   CHECK_EQ(q.traded_since_diff, 0.0);
 }
 
+TEST(power_rule_blames_cancellations_on_the_larger_part_of_the_queue) {
+  // 40 ahead, 40 behind, 30 cancelled: proportional takes 15 from ahead; with power 3 a and b are equal, so
+  // also 15. With 60 ahead and 20 behind: proportional takes 30 * 60/80 = 22.5 from ahead, power 3 takes
+  // 30 * 216000/(216000 + 8000) = 28.93. The power rule concentrates cancellations on the larger side.
+  Quote even = live_bid(100, 10, 40), even3 = even;
+  QuoteLogic::on_level_change(even, 80, 50, 1.0);
+  QuoteLogic::on_level_change(even3, 80, 50, 3.0);
+  CHECK(std::abs(even.ahead - 25.0) < 1e-9);
+  CHECK(std::abs(even3.ahead - 25.0) < 1e-9);
+  Quote front = live_bid(100, 10, 60), front3 = front;
+  QuoteLogic::on_level_change(front, 80, 50, 1.0);
+  QuoteLogic::on_level_change(front3, 80, 50, 3.0);
+  CHECK(std::abs(front.ahead - 37.5) < 1e-9);
+  CHECK(std::abs(front3.ahead - (60.0 - 30.0 * 216000.0 / 224000.0)) < 1e-9);
+  // and with most of the queue behind us, power 3 blames the back: we move up much less than proportionally
+  Quote back = live_bid(100, 10, 20), back3 = back;
+  QuoteLogic::on_level_change(back, 80, 50, 1.0);   // 30 * 20/80 = 7.5 from ahead
+  QuoteLogic::on_level_change(back3, 80, 50, 3.0);  // 30 * 8000/224000 = 1.07 from ahead
+  CHECK(std::abs(back.ahead - 12.5) < 1e-9);
+  CHECK(std::abs(back3.ahead - (20.0 - 30.0 * 8000.0 / 224000.0)) < 1e-9);
+}
+
 TEST(level_growth_never_improves_position_and_ahead_is_capped_by_the_level) {
   Quote q = live_bid(100, 10, 30);
   QuoteLogic::on_level_change(q, 40, 500);  // new orders queue behind us

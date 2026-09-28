@@ -22,6 +22,8 @@ def main():
     a = ap.parse_args()
     grid = pd.read_csv(os.path.join(a.results, "grid.csv"))
     grid = grid[(grid.dataset == a.dataset) & (grid.latency_ms == 10) & (grid.fee_bps == 0) & (grid.fill == "queue")]
+    if "cancel_power" in grid.columns:  # the main runs (with fill logs) use the proportional rule
+        grid = grid[grid.cancel_power == 1]
     ps, qs = a.price_scale, a.qty_scale
     worst = 0.0
     print(f"{'run':<22} {'fills':>6} {'PnL sim':>10} {'PnL audit':>10} {'inv sim':>9} {'inv audit':>9} {'spread sim':>10} {'spread aud':>10}  ok")

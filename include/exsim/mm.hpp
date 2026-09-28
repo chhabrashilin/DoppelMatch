@@ -11,7 +11,8 @@
 //   * A sell-aggressor trade BELOW P swept through our price (every bid at P and above was
 //     exhausted), so we are filled in full. A trade above P never reached us.
 //   * Level shrinkage that trades do not explain is cancellation. A canceller's queue position is not
-//     observable, so it is prorated: queue_ahead -= cancelled * queue_ahead / (level - traded).
+//     observable, so it is split by a rule: proportional to the queue ahead of and behind us by default
+//     (Config::cancel_power = 1), or by a power rule (cancel_power = 3, which L3 ground truth supports).
 //   * Level growth joins behind us and never improves our position.
 //   * If the opposite best price moves to or through our price, we are filled in full.
 // FillModel::Optimistic ignores the queue (any trade at or through our price fills us). It exists to
@@ -50,6 +51,7 @@ struct Config {
   std::int64_t requote_ticks = 2;         // move a live quote only if the target shifted by at least this (not JoinTouch)
   std::uint64_t latency_ns = 10'000'000;  // decision -> live, and decision -> cancel effective
   double fee_bps = 0;                     // per fill on notional; negative = rebate
+  double cancel_power = 1;                // how cancellations split ahead/behind us (1 = proportional; see QuoteLogic)
   std::uint64_t warmup_ns = 30'000'000'000ull;
   double price_scale = 0.01;              // quote-currency per tick
   double qty_scale = 1e-5;                // base units per lot
@@ -108,15 +110,23 @@ struct QuoteLogic {
     return fill;
   }
 
-  // Exchange level at our price changed from `before` to `after` lots at a book update.
-  static void on_level_change(Quote& q, double before, double after) {
+  // Exchange level at our price changed from `before` to `after` lots at a book update. `power` sets how a
+  // cancellation is split between the queue ahead of us (a) and behind us (b): share ahead =
+  // a^n / (a^n + b^n). n = 1 is proportional; larger n concentrates cancellations on the larger part of the
+  // queue. Scored against Coinbase's order-by-order ground truth, n = 3 fits best (docs/RESEARCH.md, part 2).
+  static void on_level_change(Quote& q, double before, double after, double power = 1.0) {
     if (!q.active) return;
     const double shrink = before - after;
     if (shrink > 0) {
       const double explained = std::min(shrink, q.traded_since_diff);
       const double cancelled = shrink - explained;
       const double base = before - explained;  // level after trades, before cancellations
-      if (cancelled > 0 && base > 0) q.ahead -= cancelled * std::min(q.ahead, base) / base;
+      if (cancelled > 0 && base > 0) {
+        const double a = std::min(q.ahead, base), b = base - a;
+        const double an = std::pow(a, power), bn = std::pow(b, power);
+        const double share = an + bn > 0 ? an / (an + bn) : 0.0;
+        q.ahead -= std::min(a, cancelled * share);
+      }
     }
     q.ahead = std::clamp(q.ahead, 0.0, std::max(after, 0.0));
     q.traded_since_diff = 0;

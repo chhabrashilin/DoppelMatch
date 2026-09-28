@@ -72,6 +72,10 @@ def main():
     os.makedirs(a.img, exist_ok=True)
     g = pd.read_csv(os.path.join(a.results, "grid.csv"))
     g = g[g.dataset == ds].copy()
+    if "cancel_power" not in g.columns:
+        g["cancel_power"] = 1.0
+    alt_rule = g[g.cancel_power != 1].copy()  # the power-3 cancellation rule, compared at the end
+    g = g[g.cancel_power == 1].copy()
     g["kind"] = g.label.map(kind)
     order = ["touch"] + [l for l in g.label.unique() if l.startswith("fixed")] + [l for l in g.label.unique() if l.startswith("as")]
     main_ = g[(g.latency_ms == 10) & (g.fee_bps == 0) & (g.fill == "queue")].set_index("label").loc[order]
@@ -194,6 +198,17 @@ def main():
     axs[0].set_title(f"{ds}: PnL and inventory through the session")
     fig.savefig(os.path.join(a.img, f"mm_timeseries_{tag}.png"))
     plt.close(fig)
+
+    # ---------------- the cancellation rule: proportional vs power 3 (L3 ground truth) ----------------
+    if not alt_rule.empty:
+        p3 = alt_rule.set_index("label").loc[order]
+        rule = pd.DataFrame({"strategy": order, "fills_prop": main_.fills.to_numpy(), "fills_pow3": p3.fills.to_numpy(),
+                             "total_prop": main_.total_pnl.to_numpy(), "total_pow3": p3.total_pnl.to_numpy(),
+                             "bps_prop": (1e4 * main_.total_pnl / main_.notional).to_numpy(),
+                             "bps_pow3": (1e4 * p3.total_pnl / p3.notional).to_numpy()})
+        rule.to_csv(os.path.join(a.results, f"cancel_rule_{tag}.csv"), index=False)
+        print("cancellation rule, proportional vs power 3:")
+        print(rule.round(3).to_string(index=False))
 
     pd.set_option("display.width", 200, "display.max_columns", 30)
     print(tbl.round(3).to_string(index=False))

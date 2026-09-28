@@ -66,6 +66,8 @@ def build_cells(datasets, out_dir):
                 if lat != 10:
                     cells.append((path, k, base + ["--latency-ms", lat, "--fee-bps", 0], None))
             cells.append((path, k, base + ["--latency-ms", 10, "--fill", "optimistic"], None))
+            # the cancellation rule that Coinbase L3 ground truth supports (RESEARCH.md part 2), vs proportional
+            cells.append((path, k, base + ["--latency-ms", 10, "--fee-bps", 0, "--cancel-power", 3], None))
             for fee in FEES:
                 cells.append((path, k, base + ["--latency-ms", 10, "--fee-bps", fee], None))
     return cells
