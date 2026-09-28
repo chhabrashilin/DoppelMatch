@@ -1,4 +1,14 @@
-# Passive market making on real order-book data
+# Research on real order-book data
+
+Three studies, each built on the engine and on data validated against the exchange that produced it.
+
+1. [Passive market making](#part-1-passive-market-making-binance-l2) on an hour of Binance BTC and ETH level-2 data.
+2. [Queue position, measured](#part-2-queue-position-measured-coinbase-l3): where cancellations really come from, and which
+   level-2 queue model predicts fills best, scored against twelve days of Coinbase order-by-order ground truth.
+3. [Order-book signals](#part-3-order-book-signals-coinbase-l3): queue imbalance and order-flow imbalance, tested out of
+   sample across days with a correction for multiple testing.
+
+# Part 1: passive market making (Binance L2)
 
 **Question.** Can a passive quoting strategy make money on liquid crypto spot books once fills are modeled honestly (queue
 position, latency) and fees are included, and does the Avellaneda-Stoikov (A-S) model beat simpler quoting?
@@ -162,7 +172,8 @@ pattern (`results/ethusdt_b/`).
 
 - **One hour of data, two assets.** The BTC session trended up. A different regime (range-bound, or a volatility spike) could
   change the sign of inventory PnL. Intervals are wide; three of nine BTC strategies have a CI that comes near zero.
-- **Model risk in the fill model.** The cancellation proration is a neutral assumption. No hidden or iceberg orders, no own
+- **Model risk in the fill model.** The cancellation proration is a neutral assumption; part 2 measures it against
+  order-by-order ground truth (on a different venue) and reruns the grid with the rule that fits best. No hidden or iceberg orders, no own
   market impact (our fills would have moved the book that produced them), book data is 100 ms granular (so "mid at fill" can be
   stale by up to 100 ms), and queue position is estimated, not observed. The optimistic-vs-queue gap brackets the effect
   but does not bound it.
@@ -186,4 +197,171 @@ python scripts/analyze_results.py --results results/btcusdt_a --img docs/img --d
 ```
 
 A fresh capture will not reproduce these numbers exactly (the market is different); the committed `results/` and the
-committed 30-second sample let every stage be re-run without network access.
+committed 30-second sample let every stage be re-run without network access. Rerunning the whole grid after later engine
+changes (64-bit quantities, the Robin Hood index) reproduced all 216 committed runs exactly: every number in every row
+is identical.
+
+# Part 2: queue position, measured (Coinbase L3)
+
+**Question.** Every level-2 backtest, including part 1's, must guess where a cancellation came from: when a price level
+shrinks without a trade, was the cancelled quantity ahead of your order or behind it? The answer decides when your order
+fills. Order-by-order data makes the queue observable, so the guess can be scored.
+
+**Data.** Twelve full days of Coinbase BTC-USD (`exsim_queuestudy`), the same days as [VALIDATION.md](VALIDATION.md),
+where the engine reproduces the exchange exactly. The truth book is Coinbase's own queue.
+
+**Where cancellations come from.** For every cancellation or size reduction at the best bid or ask, its rank in the queue,
+normalized so 0 is the front and 1 the back (0.5 if every order were equally likely to cancel):
+
+| orders at the level | mean normalized rank (95% CI over days) | share from the back half | range of the daily mean |
+|---|---:|---:|---:|
+| 2-4 | 0.562 [0.514, 0.607] | 57.2% [51.8%, 62.1%] | 0.419-0.683 |
+| 5-9 | 0.676 [0.641, 0.714] | 71.6% [67.7%, 75.9%] | 0.600-0.831 |
+| 10 or more | 0.725 [0.690, 0.766] | 76.5% [72.8%, 80.6%] | 0.625-0.873 |
+
+Short queues are close to uniform (and on some days front-weighted); in longer queues cancellations come
+disproportionately from the back, on every one of the twelve days. Orders at the back
+are the newest, so this is consistent with fast participants posting and pulling quotes while older orders keep their
+priority. A proportional ("uniform") cancellation model therefore moves a simulated order up the queue too fast.
+
+**Which model predicts fills.** Every 5 seconds a zero-size probe joins the back of the best bid and of the best ask. Its
+true fill time is exact: the first trade at its price that reaches an order which joined after it (or a trade through its
+price). Six estimators see only what a level-2 observer sees and predict the same fill. They differ in the share of an
+unexplained level decrease attributed to the queue ahead: front (all of it), back (none unless it must), proportional
+(a/(a+b)), power 2 and 3 (a^n/(a^n+b^n), as in hftbacktest), and logarithmic. Scored on queue-sensitive probes (no trade
+through the price, at least two orders at the level when joining), with intervals over days:
+
+| rule | predicted / true fills | predicted too early | predicted too late | mean timing error |
+|---|---:|---:|---:|---:|
+| front | 1.033 [1.02, 1.04] | 30.3% [24.9%, 35.6%] | 0.0% | 4.50 s [2.45, 7.04] |
+| proportional | 1.007 [1.00, 1.01] | 15.1% [11.8%, 18.7%] | 9.8% | 2.78 s [1.70, 4.08] |
+| power 2 | 0.999 [1.00, 1.00] | 8.3% [6.5%, 10.3%] | 12.3% | 2.21 s [1.54, 2.99] |
+| **power 3** | **0.998 [1.00, 1.00]** | **7.6% [5.9%, 9.5%]** | 11.7% | **2.11 s [1.48, 2.84]** |
+| logarithmic | 1.022 [1.01, 1.03] | 23.5% [18.9%, 28.2%] | 10.3% | 4.16 s [2.47, 6.24] |
+| back | 0.993 [0.99, 0.99] | 0.0% | 20.3% | 2.16 s [1.62, 2.75] |
+
+414,206 probes; 153,818 queue-sensitive, of which 85.8% truly filled within the 300 s horizon. Early and late are shares
+of probes filled both in truth and by the rule; intervals are 95% bootstraps over days.
+
+![Six queue models against level-3 truth](img/queue_rules_vs_truth.png)
+
+- **Every rule gets the number of fills nearly right** (within 3.3%); the fill count is not where queue models differ.
+  They differ in *when*: a rule that fills too early is an optimistic backtest, one that fills too late a pessimistic one.
+- **The proportional rule is optimistic**, as the cancellation measurement predicts: it moves an order up the queue as
+  fast as cancellations shrink the level, but most cancellations come from behind. It predicts 15.1% of fills too early,
+  twice the power-3 rule's 7.6%, and the intervals do not overlap.
+- **Power 3 is the best single rule** on early fills and mean timing error; power 2 is statistically indistinguishable
+  from it. The bounds behave as bounds: "front" is always early, "back" never.
+- Timing errors are small in absolute terms (a median of zero for every rule: most fills happen at a moment every rule
+  agrees on). The differences matter where a backtest's fills are marginal, which is exactly quoting at the touch.
+
+**Consequence for part 1.** The market-making simulator's cancellation rule is now a parameter (`--cancel-power`), and
+the grid includes the power-3 rule next to the proportional one:
+
+| strategy (10 ms, no fees) | BTC fills, prop -> pow3 | BTC total PnL (USDT) | ETH 25 min fills | ETH total PnL (USDT) |
+|---|---:|---:|---:|---:|
+| touch | 1,246 -> 1,097 | -51.54 -> -51.03 | 1,438 -> 1,387 | -3.01 -> -3.11 |
+| fixed h=2 | 512 -> 506 | -44.51 -> -44.51 | 1,439 -> 1,432 | -3.53 -> -3.53 |
+| fixed h=10 | 297 -> 297 | -45.08 -> -45.08 | 914 -> 906 | -2.48 -> -2.48 |
+| fixed, A-S width | 201 -> 201 | -26.72 -> -26.72 | 192 -> 182 | -1.75 -> -1.75 |
+| A-S gamma/k=4e-2 | 164 -> 172 | -18.19 -> -18.19 | 95 -> 92 | -0.28 -> -0.28 |
+| A-S gamma/k=4e-1 | 66 -> 76 | -6.96 -> -5.41 | 27 -> 26 | -0.09 -> -0.09 |
+
+The more realistic rule changes *how many* fills quoting at the touch gets (12% fewer on BTC, 4% fewer on ETH, because
+the queue ahead now shrinks more slowly) but not the conclusion: every strategy still loses, by about the same
+basis points of notional. Part 1's findings do not rest on the proportional assumption. All cells are in
+`results/*/grid.csv` and `results/*/cancel_rule_*.csv`.
+
+# Part 3: order-book signals (Coinbase L3)
+
+**Question.** Is there short-horizon information in the book, how much, and is it enough to trade on? Everything is fitted on
+some days and scored on a held-out day (leave one day out), so no number below is in-sample.
+
+**Features** (`exsim_features`, one-second bars of exchange time, book state at the bar's end): queue imbalance at the best
+quotes, I = (bid size - ask size) / (bid size + ask size); the same over the top five levels; order-flow imbalance (Cont,
+Kukanov and Stoikov 2014) over the last bar and the last 10 seconds, scaled by average depth; and signed trade volume over
+the last bar. Bars touching a gap in the archive are excluded, along with any target that spans one.
+
+**1. Queue imbalance and the next mid move** (Gould and Bonart 2016). Target: is the next change of the mid price up?
+
+| feature | AUC on the held-out day (95% CI over days) | accuracy | majority-class baseline | worst day AUC |
+|---|---:|---:|---:|---:|
+| queue imbalance, best quotes | 0.687 [0.677, 0.695] | 63.4% [62.6%, 64.3%] | 53.9% | 0.652 |
+| depth imbalance, top 5 levels | 0.641 [0.631, 0.650] | 59.8% [59.2%, 60.5%] | 53.9% | 0.607 |
+
+The relation is monotone and stable across days: when the bid queue is nearly empty relative to the ask (I below -0.8)
+the next move is up 33.7% of the time; when the ask queue is nearly empty (I above 0.8), 77.0%. The best level carries
+more information than the top five, as Gould and Bonart found for large-tick stocks; BTC-USD at a $0.01 tick is a very
+large-tick instrument in that sense (the spread is almost always one tick). 1.04 million valid one-second bars.
+
+**2. Contemporaneous price impact of order flow.** Cont, Kukanov and Stoikov find mid-price changes are close to linear in
+order-flow imbalance over the same interval. Per day, R^2 of that regression:
+
+| interval | R^2 (95% CI over days) | range over days |
+|---|---:|---:|
+| 1 s | 0.324 [0.275, 0.376] | 0.225-0.499 |
+| 10 s | 0.310 [0.246, 0.376] | 0.128-0.521 |
+| 60 s | 0.235 [0.176, 0.293] | 0.082-0.413 |
+
+This replicates the literature on a different venue and asset; it is not a trading signal, since both sides are measured
+over the same interval.
+
+**3. Predicting returns.** OLS of the mid return over the next 1, 10 and 60 seconds on each feature (15 tests), scored by
+out-of-sample R^2 against a zero forecast on each held-out day; a one-sided test across days, Holm-corrected over all 15:
+
+| feature @ horizon | OOS R^2 (95% CI over days) | days > 0 | p | Holm p |
+|---|---:|---:|---:|---:|
+| order-flow imbalance, last 1 s @ 1 s | 0.0060 [0.0041, 0.0080] | 12/12 | 7.3e-05 | **0.001** |
+| order-flow imbalance, last 10 s @ 1 s | 0.0014 [0.0007, 0.0020] | 11/12 | 8.6e-04 | **0.008** |
+| queue imbalance @ 10 s | 0.0106 [0.0070, 0.0150] | 12/12 | 2.4e-04 | **0.002** |
+| depth imbalance @ 10 s | 0.0079 [0.0053, 0.0102] | 11/12 | 5.2e-05 | **0.001** |
+| order-flow imbalance, last 1 s @ 10 s | 0.0021 [0.0015, 0.0029] | 12/12 | 6.8e-05 | **0.001** |
+| queue imbalance @ 60 s | 0.0033 [0.0021, 0.0046] | 12/12 | 1.6e-04 | **0.002** |
+| depth imbalance @ 60 s | 0.0027 [0.0018, 0.0037] | 12/12 | 1.6e-04 | **0.002** |
+| order-flow imbalance, last 10 s @ 10 s | 0.0008 [0.0003, 0.0014] | 9/12 | 0.010 | 0.08 |
+| trade imbalance @ 10 s | 0.0003 [0.0000, 0.0005] | 9/12 | 0.027 | 0.19 |
+| order-flow imbalance, last 1 s @ 60 s | 0.0001 [0.0000, 0.0003] | 9/12 | 0.044 | 0.27 |
+| queue imbalance @ 1 s | 0.0044 [-0.0180, 0.0227] | 9/12 | 0.35 | 1 |
+| depth imbalance @ 1 s | 0.0023 [-0.0156, 0.0163] | 9/12 | 0.40 | 1 |
+| trade imbalance @ 1 s | 0.0002 [-0.0015, 0.0016] | 9/12 | 0.43 | 1 |
+| trade imbalance @ 60 s | -0.0001 [-0.0005, 0.0001] | 6/12 | 0.83 | 1 |
+| order-flow imbalance, last 10 s @ 60 s | -0.0001 [-0.0003, 0.0001] | 5/12 | 0.88 | 1 |
+
+- **Seven of fifteen survive the correction**, each positive on 11 or 12 of 12 held-out days: the book does predict
+  short-horizon returns. Uncorrected, ten would have looked significant at 5%; three of those were not robust.
+- **It predicts very little.** The best, queue imbalance at 10 seconds, explains 1.1% of the variance of 10-second returns
+  out of sample. With 10-second returns having a standard deviation of 2.46 bp, that is a predictable component of about
+  0.25 bp (the square root of 1.1% times 2.46).
+- **Too little to trade on as a taker.** Crossing BTC-USD's spread is nearly free (one cent on a price in the tens of
+  thousands, a median of 0.0013 bp), so the binding cost is the exchange fee, which on Coinbase is quoted in basis points, not hundredths of one.
+  The use of this information is passive: skewing or pulling quotes when the queue on one side is about to empty, which is
+  where part 1's adverse selection comes from.
+- **At one second, queue imbalance is erratic out of sample** (a positive mean but an interval spanning zero): a few days'
+  extreme returns dominate the squared errors. Its directional signal at one second is strong (question 1); the size of the
+  move it predicts is not stable.
+
+![Queue imbalance and predictability](img/signals_coinbase.png)
+
+## What parts 2 and 3 do not show
+
+- **One product, one venue.** BTC-USD on Coinbase has a tick of $0.01 on a price between roughly $60,000 and $120,000 over
+  these days (about 0.001 bp), so its spread is almost always one tick and the queue at the touch is what matters. Assets
+  whose spread spans many ticks behave differently.
+- **Twelve days, one per month.** They span a year and very different price levels, which is a strength for out-of-sample
+  testing, but they are not consecutive, so nothing here speaks to day-to-day persistence.
+- **Queue probes are zero-size and cannot be adversely selected by their own presence.** A real order of meaningful size
+  changes the queue it joins.
+- **Signals are measured at one-second resolution.** Faster horizons, where queue imbalance is typically strongest, are left
+  out deliberately: the conclusions would then depend on a latency model.
+
+## Reproducing parts 2 and 3
+
+```bash
+# after fetching and converting days as in data/README.md
+for f in data/l3/*.exl3; do d=$(basename $f .exl3)
+  build/release/exsim_queuestudy --in $f --out-prefix results/queue/$d > results/queue/$d.txt
+  build/release/exsim_features   --in $f --out-prefix results/signals/$d
+done
+python scripts/analyze_queue.py results/queue/*.probes.csv --img docs/img --out results/queue/summary.json
+python scripts/analyze_signals.py results/signals --img docs/img --out results/signals/summary.json
+```
