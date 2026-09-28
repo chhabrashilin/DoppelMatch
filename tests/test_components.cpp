@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "exsim/client_ids.hpp"
 #include "exsim/latency_histogram.hpp"
 #include "exsim/order_index.hpp"
 #include "exsim/price_bitmap.hpp"
@@ -81,6 +82,7 @@ void index_matches_unordered_map() {
       model.erase(it);
     }
     CHECK_EQ(idx.size(), model.size());
+    CHECK(idx.robin_hood_ordered());
     const OrderId probe = 1 + rng.below(200);
     const auto it = model.find(probe);
     CHECK_EQ(idx.find(probe, key_of), it == model.end() ? kNil : it->second);
@@ -106,6 +108,7 @@ TEST(order_index_locality_hash_stays_correct_under_a_worst_case_collision_attack
   for (std::uint32_t i = 1; i < 512; i += 2) CHECK_EQ(idx.find(colliding_key(i + 1, bits, C), key_of), i);
   CHECK_EQ(idx.find(colliding_key(9999, bits, C), key_of), kNil);
   CHECK_EQ(idx.size(), 256u);
+  CHECK(idx.robin_hood_ordered());
 }
 
 TEST(spsc_single_thread_semantics) {
@@ -242,4 +245,35 @@ TEST(protocol_rejects_malformed_input) {
   CHECK_EQ(decode_stream(stream, &st).size(), 2u);
   CHECK_EQ(st.malformed, 1u);
   CHECK(!st.truncated);
+}
+
+TEST(siphash_matches_the_reference_vectors) {
+  // Key 00 01 .. 0f; the paper's worked example (15-byte message 00 .. 0e) and the empty message.
+  const std::uint64_t k0 = 0x0706050403020100ull, k1 = 0x0f0e0d0c0b0a0908ull;
+  unsigned char msg[15];
+  for (int i = 0; i < 15; ++i) msg[i] = static_cast<unsigned char>(i);
+  CHECK_EQ((siphash<2, 4>(k0, k1, msg, 15)), 0xa129ca6149be45e5ull);
+  CHECK_EQ((siphash<2, 4>(k0, k1, msg, 0)), 0x726fdb47dd0e0e31ull);
+}
+
+TEST(client_ids_map_to_sequential_exchange_ids) {
+  ClientIdMap ids(100);
+  using K = ClientIdMap::Key;
+  const OrderId a = ids.for_new(K{7, 0, 1});
+  const OrderId b = ids.for_new(K{7, 0, 2});  // same client id, other owner: a different order
+  const OrderId c = ids.for_new(K{7, 1, 1});  // same client id, other symbol: a different order
+  CHECK_EQ(a, OrderId{100});
+  CHECK_EQ(b, OrderId{101});
+  CHECK_EQ(c, OrderId{102});
+  CHECK_EQ(ids.for_new(K{7, 0, 1}), a);       // live duplicate: the engine must see the same id to reject it
+  CHECK_EQ(ids.find(K{7, 0, 1}), a);
+  CHECK_EQ(ids.find(K{8, 0, 1}), OrderId{0}); // unknown: 0, which is never assigned
+  CHECK_EQ(ids.for_new(K{0, 0, 1}), OrderId{0});
+  CHECK_EQ(ids.to_client(a, 1), OrderId{7});
+  CHECK_EQ(ids.to_client(a, 2), OrderId{0});  // someone else's order is anonymous
+  CHECK_EQ(ids.owner_of(b), OwnerId{2});
+  ids.retire(a);
+  CHECK_EQ(ids.find(K{7, 0, 1}), OrderId{0});
+  CHECK_EQ(ids.for_new(K{7, 0, 1}), OrderId{103});  // a reused client id is a new order
+  CHECK_EQ(ids.live(), std::size_t{3});
 }
