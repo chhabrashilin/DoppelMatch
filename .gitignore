@@ -11,3 +11,7 @@ __pycache__/
 data/*
 !data/README.md
 !data/sample_btcusdt_30s.exmd
+
+# OCaml (dune) build output, and command streams kept by scripts/ocaml_diff.sh after a mismatch
+_build/
+ocaml_diff_seed*.txt

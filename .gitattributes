@@ -1,0 +1,7 @@
+# Scripts run under Linux/WSL even when the repository is checked out on Windows: keep LF line endings.
+*.sh    text eol=lf
+*.py    text eol=lf
+*.ml    text eol=lf
+*.mli   text eol=lf
+dune    text eol=lf
+dune-project text eol=lf

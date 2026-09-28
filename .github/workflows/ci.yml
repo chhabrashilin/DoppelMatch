@@ -17,7 +17,7 @@ jobs:
           - { name: "asan + ubsan",      cxx: clang++-18, flags: "-DCMAKE_BUILD_TYPE=Debug -DEXSIM_SANITIZE=ON" }
           - { name: "thread sanitizer",  cxx: clang++-18, flags: "-DCMAKE_BUILD_TYPE=RelWithDebInfo -DEXSIM_TSAN=ON" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: sudo apt-get update && sudo apt-get install -y ninja-build g++-14 clang-18
       - run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} ${{ matrix.flags }}
       - run: cmake --build build
@@ -49,11 +49,57 @@ jobs:
         if: matrix.name == 'gcc release' || matrix.name == 'asan + ubsan'
         run: bash scripts/e2e_gateway.sh build
 
+      - name: sessions end to end (maker reports, anonymous counterparties, exchange-assigned ids vs hash flooding)
+        if: matrix.name == 'gcc release'
+        run: python3 scripts/e2e_sessions.py build
+
+      - name: replication end to end (multicast with loss, gap repair, kill -9 failover to the backup)
+        if: matrix.name == 'gcc release' || matrix.name == 'asan + ubsan'
+        run: bash scripts/e2e_replication.sh build
+
+  ocaml:
+    name: OCaml reference model and cross-language agreement
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ocaml/setup-ocaml@v3
+        with: { ocaml-compiler: "5.2" }
+      - run: opam install -y dune ppx_expect ppx_inline_test qcheck-core
+      - name: expect tests and property tests
+        working-directory: ocaml
+        run: opam exec -- dune runtest
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build g++-14
+      - run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_BUILD_TYPE=Release -DEXSIM_NATIVE=OFF && cmake --build build --target exsim_difffeed
+      - name: the C++ engine and the OCaml model emit identical events on 5M random commands
+        run: opam exec -- bash scripts/ocaml_diff.sh build 20 250000
+
+  coinbase:
+    name: engine reproduces real Coinbase matching
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - run: pip install orjson && sudo apt-get update && sudo apt-get install -y ninja-build g++-14
+      - run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_BUILD_TYPE=Release -DEXSIM_NATIVE=OFF && cmake --build build --target exsim_l3replay
+      - name: fetch the first 5 minutes of a day of BTC-USD order-by-order data (free from Tardis.dev)
+        run: python scripts/fetch_coinbase_l3.py --date 2026-09-01 --minutes 5 --out l3raw && python scripts/l3conv.py l3raw sample.exl3
+      - name: every order and every match must be reproduced exactly
+        run: |
+          ./build/exsim_l3replay --in sample.exl3 --check-every 20000 | tee r.txt
+          grep -q "reproduced exactly.*(100.0000%)" r.txt
+          grep -q "predicted exactly by the engine: .*(100.0000%)" r.txt
+          grep -q "comparisons.*failed 0;" r.txt
+      - name: the comparison must be able to fail (drop every 1000th cancel)
+        run: |
+          ./build/exsim_l3replay --in sample.exl3 --check-every 20000 --drop-cancels 1000 | tee f.txt || true
+          ! grep -q "diverged: 0 " f.txt
+
   liquibook:
     name: agreement with Liquibook
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: sudo apt-get update && sudo apt-get install -y ninja-build g++-14
       - run: bash scripts/fetch_liquibook.sh third_party/liquibook
       - run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_BUILD_TYPE=Release -DEXSIM_NATIVE=OFF -DEXSIM_LIQUIBOOK_DIR=$PWD/third_party/liquibook
@@ -65,9 +111,9 @@ jobs:
     name: WebAssembly engine
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: mymindstorm/setup-emsdk@v14
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: mymindstorm/setup-emsdk@v15
+      - uses: actions/setup-node@v5
         with: { node-version: 22 }
       - run: bash scripts/build_wasm.sh
       - run: node wasm/test_wasm.js
@@ -78,8 +124,8 @@ jobs:
     name: accounting audit of the committed study results
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install numpy pandas
       - name: recompute PnL, inventory and spread capture from raw fills and compare with the simulator
