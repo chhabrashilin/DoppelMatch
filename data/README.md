@@ -41,3 +41,39 @@ so the capture never uses exchange timestamps.
 Diffs and trades arrive on the same websocket connection, so `rx_ns` orders them correctly relative to each other.
 Snapshots are fetched over REST every 2 s **after** the websocket is open (Binance's documented procedure), and their
 `lastUpdateId` lines up exactly with a diff boundary in every case observed, which is what makes exact validation possible.
+
+# Coinbase order-by-order (level 3) data
+
+The engine-versus-exchange validation ([docs/VALIDATION.md](../docs/VALIDATION.md)), the queue-position study and the
+signal study use Coinbase Exchange's BTC-USD "full" channel: every order the exchange received, and every rest, match,
+modify and cancel, each with its order id. [Tardis.dev](https://tardis.dev) archives it and serves the first day of every
+month without an API key. A day is 1.5 to 4.5 GB compressed, so none of it is committed; CI fetches the first 5
+minutes of a day and validates those.
+
+```bash
+pip install orjson                                   # optional: faster JSON parsing in the converter
+python scripts/fetch_coinbase_l3.py --date 2026-09-01 --hours 24 --out data/l3/2026-09-01   # resumable, hourly .gz
+python scripts/l3conv.py data/l3/2026-09-01 data/l3/2026-09-01.exl3                        # ~20 minutes per day
+build/release/exsim_l3replay   --in data/l3/2026-09-01.exl3                                 # engine vs Coinbase
+build/release/exsim_queuestudy --in data/l3/2026-09-01.exl3 --out-prefix results/queue/2026-09-01
+build/release/exsim_features   --in data/l3/2026-09-01.exl3 --out-prefix results/signals/2026-09-01
+```
+
+A capture must start at 00:00 UTC: that is where Tardis records a full book snapshot (`full_snapshot`), the only way to
+seed the book. It records another whenever its capture connection reconnects, which is how the tools recover from the
+occasional gap in the archived sequence numbers.
+
+## The `.exl3` format
+
+`l3conv.py` scales prices to integer ticks (1e-2 USD) and sizes to integer satoshis (1e-8 BTC) with exact string
+arithmetic, maps each order's UUID to a sequential 64-bit id, and writes every message as one record, in file order.
+
+```
+header  "EXL3" | u32 version=1 | u32 price_decimals | u32 qty_decimals
+record  72 bytes: u64 seq | u64 exchange_time_ns | u64 id | u64 id2 | i64 px | i64 px2 | u64 q | u64 q2 |
+                  u8 kind | u8 side | u8 order_type | u8 flags | u32 pad                        (little endian)
+  kind   1 snapshot order   2 snapshot end   3 received   4 open   5 done   6 match   7 change
+```
+
+UUIDs are forgotten only a million messages after an order finishes: the snapshot is fetched while the stream runs,
+so an order's `done` can appear in the file before a snapshot that still lists it (see DESIGN.md section 8).
