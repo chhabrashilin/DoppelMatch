@@ -1,0 +1,6 @@
+(library
+ (name exsim_ref_tests)
+ (libraries exsim_ref qcheck-core)
+ (inline_tests)
+ (preprocess
+  (pps ppx_expect ppx_inline_test)))
