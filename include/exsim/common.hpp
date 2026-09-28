@@ -43,7 +43,9 @@ inline constexpr std::uint32_t kNil = 0xFFFF'FFFFu;
 
 using OrderId = std::uint64_t;
 using Price = std::int64_t;
-using Qty = std::uint32_t;
+// 64-bit: crypto quantities are integer satoshis (1e-8 BTC), and a 32-bit count overflows at 42.9 BTC.
+// Real Coinbase flow contains larger orders, so a narrower type would be incorrect, not just limiting.
+using Qty = std::uint64_t;
 using SymbolId = std::uint32_t;
 using OwnerId = std::uint32_t;
 
@@ -54,11 +56,22 @@ enum class MsgType : std::uint8_t { NewOrder = 1, Cancel = 2, Modify = 3 };
 inline constexpr std::uint8_t kFlagPostOnly = 0x01;
 
 // Self-trade prevention, applied when an incoming order would match a resting order of the same owner.
+// Real venues let each order choose (Coinbase, Binance and CME all do): the book's mode is the default, and
+// an order can override it through bits 1-2 of Command::flags (see stp_flag / effective_stp).
 enum class Stp : std::uint8_t {
-  None = 0,            // allow self-trades (faithful replay of external flow)
-  CancelResting = 1,   // cancel the resting order, keep matching the incoming one
-  CancelIncoming = 2,  // stop matching, cancel the incoming order's remainder
+  None = 0,             // allow self-trades (faithful replay of external flow)
+  CancelResting = 1,    // cancel the resting order, keep matching the incoming one ("cancel oldest")
+  CancelIncoming = 2,   // stop matching, cancel the incoming order's remainder ("cancel newest")
+  DecrementCancel = 3,  // cancel the smaller of the two and decrement the larger by its size; cancel both
+                        // if equal (Coinbase's default "dc")
 };
+inline constexpr std::uint8_t kStpShift = 1;
+inline constexpr std::uint8_t kStpMask = 0x06;
+constexpr std::uint8_t stp_flag(Stp s) noexcept { return static_cast<std::uint8_t>(static_cast<std::uint8_t>(s) << kStpShift); }
+constexpr Stp effective_stp(std::uint8_t flags, Stp book_default) noexcept {
+  const auto v = static_cast<std::uint8_t>((flags & kStpMask) >> kStpShift);
+  return v != 0 ? static_cast<Stp>(v) : book_default;
+}
 
 constexpr Side opposite(Side s) noexcept { return s == Side::Buy ? Side::Sell : Side::Buy; }
 
@@ -76,7 +89,7 @@ struct Command {
   OrdType ord_type;
   Tif tif;
   std::uint8_t flags;
-  std::uint8_t pad[7];
+  std::uint8_t pad[3];
 };
 static_assert(sizeof(Command) == 56);
 static_assert(std::is_trivially_copyable_v<Command>);
@@ -119,7 +132,7 @@ struct Event {
   Side side;          // Trade: the aggressor's side
   MsgType request;    // Rejected: which request type was rejected
 };
-static_assert(sizeof(Event) == 40);
+static_assert(sizeof(Event) == 48);
 static_assert(std::has_unique_object_representations_v<Event>);
 
 constexpr Event accepted_event(SymbolId sym, OrderId id, Side side, Price px, Qty qty) noexcept {
@@ -149,6 +162,12 @@ constexpr Event canceled_event(SymbolId sym, OrderId id, Side side, Price px, Qt
 constexpr Event modified_event(SymbolId sym, OrderId id, Side side, Price px, Qty qty) noexcept {
   Event e{};
   e.type = EventType::Modified, e.symbol = sym, e.order_id = id, e.side = side, e.price = px, e.qty = qty;
+  return e;
+}
+// Decrement-and-cancel self-trade prevention reduced an order to `new_qty` without a trade.
+constexpr Event stp_decrement_event(SymbolId sym, OrderId id, Side side, Price px, Qty new_qty) noexcept {
+  Event e = modified_event(sym, id, side, px, new_qty);
+  e.reason = Reason::SelfTrade;
   return e;
 }
 

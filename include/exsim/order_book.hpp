@@ -142,6 +142,15 @@ class OrderBook {
     }
   }
 
+  // Visits the queue at one price, front first: f(OrderId, Qty, Side). Out-of-band prices visit nothing.
+  template <class F>
+  void for_each_order_at(Price px, F&& f) const {
+    const Price rel = px - min_price_;
+    if (rel < 0 || rel >= n_) return;
+    for (std::uint32_t s = level(static_cast<std::int32_t>(rel)).head; s != kNil; s = store_.next(s))
+      f(store_.id(s), store_.qty(s), store_.side(s));
+  }
+
   // Full structural audit, O(num_levels + orders). Tests call it; the engine never does.
   bool check_invariants() const {
     if (best_bid_ != bid_bits_.find_prev(n_ - 1) || best_ask_ != ask_bits_.find_next(0)) return false;
@@ -213,11 +222,12 @@ class OrderBook {
     const Price px = market ? 0 : c.price;
     sink.on_event(accepted_event(symbol_, c.order_id, S, px, c.qty));
 
-    if (EXSIM_UNLIKELY(c.tif == Tif::Fok) && !fillable<S>(limit, c.qty, c.owner)) {
+    const Stp stp = effective_stp(c.flags, stp_);
+    if (EXSIM_UNLIKELY(c.tif == Tif::Fok) && !fillable<S>(limit, c.qty, c.owner, stp)) {
       return sink.on_event(canceled_event(symbol_, c.order_id, S, px, c.qty, Reason::FokUnfilled));
     }
     bool stp_stop = false;
-    const Qty left = sweep<S>(c.order_id, c.owner, limit, c.qty, stp_stop, sink);
+    const Qty left = sweep<S>(c.order_id, c.owner, limit, c.qty, stp, stp_stop, sink);
     if (left == 0) return;
     if (EXSIM_UNLIKELY(stp_stop))
       return sink.on_event(canceled_event(symbol_, c.order_id, S, px, left, Reason::SelfTrade));
@@ -230,7 +240,7 @@ class OrderBook {
   EXSIM_ALWAYS_INLINE void reenter(OrderId id, OwnerId owner, std::int32_t ix, Qty qty, std::uint64_t ts,
                                    Sink& sink) noexcept {
     bool stp_stop = false;
-    const Qty left = sweep<S>(id, owner, ix, qty, stp_stop, sink);
+    const Qty left = sweep<S>(id, owner, ix, qty, stp_, stp_stop, sink);
     if (left == 0) return;
     if (EXSIM_UNLIKELY(stp_stop))
       return sink.on_event(canceled_event(symbol_, id, S, min_price_ + ix, left, Reason::SelfTrade));
@@ -241,8 +251,8 @@ class OrderBook {
   // unfilled quantity. This loop is the hot path. For each maker it reads {id, qty, next}, emits a
   // trade, then either decrements the maker in place or releases it.
   template <Side S, class Sink>
-  EXSIM_ALWAYS_INLINE Qty sweep(OrderId taker, OwnerId taker_owner, std::int32_t limit, Qty qty, bool& stp_stop,
-                                Sink& sink) noexcept {
+  EXSIM_ALWAYS_INLINE Qty sweep(OrderId taker, OwnerId taker_owner, std::int32_t limit, Qty qty, Stp stp,
+                                bool& stp_stop, Sink& sink) noexcept {
     constexpr bool kBuy = S == Side::Buy;
     std::int32_t& best = kBuy ? best_ask_ : best_bid_;
     while (qty != 0 && crosses<S>(limit)) {
@@ -251,18 +261,35 @@ class OrderBook {
       const Price px = min_price_ + ix;
       std::uint32_t s = lv.head;
       while (s != kNil) {
-        if (EXSIM_UNLIKELY(stp_ != Stp::None) && store_.owner(s) == taker_owner) {
-          if (stp_ == Stp::CancelIncoming) {
+        if (EXSIM_UNLIKELY(stp != Stp::None) && store_.owner(s) == taker_owner) {
+          if (stp == Stp::CancelIncoming) {
             stp_stop = true;
             break;
           }
           const Qty mq = store_.qty(s);
+          if (stp == Stp::DecrementCancel && mq > qty) {
+            // The resting order is larger: it is decremented by the incoming remainder, which is cancelled.
+            store_.qty(s) = mq - qty;
+            lv.qty -= qty;
+            sink.on_event(stp_decrement_event(symbol_, store_.id(s), opposite(S), px, mq - qty));
+            stp_stop = true;
+            break;
+          }
+          // Cancel the resting order (CancelResting, or DecrementCancel with a smaller or equal resting order).
           const std::uint32_t nx = store_.next(s);
           lv.qty -= mq;
           sink.on_event(canceled_event(symbol_, store_.id(s), opposite(S), px, mq, Reason::SelfTrade));
           ids_.erase_known(store_.id(s), s);
           store_.release(s);
           s = nx;
+          if (stp == Stp::DecrementCancel) {
+            if (mq == qty) {  // equal: both are cancelled
+              stp_stop = true;
+              break;
+            }
+            qty -= mq;  // the incoming order is decremented by the cancelled resting order's size
+            sink.on_event(stp_decrement_event(symbol_, taker, S, min_price_ + limit, qty));
+          }
           continue;
         }
         const Qty avail = store_.qty(s);
@@ -297,29 +324,35 @@ class OrderBook {
     return qty;
   }
 
-  // FOK pre-check: could `qty` be filled right now within `limit`? Level aggregates answer this
-  // unless self-trade prevention is on. With STP on, the order's own resting orders provide no
-  // liquidity (CancelResting) or end the sweep (CancelIncoming), so the check walks the orders.
+  // FOK pre-check: would the sweep resolve all of `qty` within `limit` without the order being cancelled?
+  // Level aggregates answer this unless self-trade prevention is on. With STP on, the check simulates the
+  // sweep order by order: own orders provide no liquidity (CancelResting), end it (CancelIncoming), or
+  // decrement the order (DecrementCancel; decremented quantity counts as resolved, a cancel does not).
   template <Side S>
-  bool fillable(std::int32_t limit, Qty qty, OwnerId owner) const noexcept {
-    std::uint64_t avail = 0;
+  bool fillable(std::int32_t limit, Qty qty, OwnerId owner, Stp stp) const noexcept {
+    std::uint64_t need = qty;
     for (std::int32_t i = S == Side::Buy ? best_ask_ : best_bid_;
          S == Side::Buy ? (i <= limit) : (i >= limit && i >= 0);
          i = S == Side::Buy ? ask_bits_.find_next(i + 1) : bid_bits_.find_prev(i - 1)) {
       const Level& lv = level(i);
-      if (stp_ == Stp::None) {
-        avail += lv.qty;
-      } else {
-        for (std::uint32_t s = lv.head; s != kNil; s = store_.next(s)) {
-          if (store_.owner(s) == owner) {
-            if (stp_ == Stp::CancelIncoming) return avail >= qty;
-            continue;
-          }
-          avail += store_.qty(s);
-          if (avail >= qty) return true;
-        }
+      if (stp == Stp::None) {
+        if (lv.qty >= need) return true;
+        need -= lv.qty;
+        continue;
       }
-      if (avail >= qty) return true;
+      for (std::uint32_t s = lv.head; s != kNil; s = store_.next(s)) {
+        const Qty q = store_.qty(s);
+        if (store_.owner(s) == owner) {
+          if (stp == Stp::CancelIncoming) return false;
+          if (stp == Stp::DecrementCancel) {
+            if (q >= need) return false;  // the incoming order would be cancelled
+            need -= q;
+          }
+          continue;
+        }
+        if (q >= need) return true;
+        need -= q;
+      }
     }
     return false;
   }

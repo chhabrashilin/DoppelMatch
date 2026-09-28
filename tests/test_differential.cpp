@@ -64,6 +64,7 @@ Command random_command(Rng& rng, Price& mid, OrderId& next_id, const BookConfig&
     if (t >= 0.05 && t < 0.13) c.tif = Tif::Ioc;
     if (t >= 0.13 && t < 0.17) c.tif = Tif::Fok;
     if (t >= 0.17 && t < 0.22) c.flags = kFlagPostOnly;
+    if (rng.chance(0.3)) c.flags |= stp_flag(static_cast<Stp>(rng.below(4)));  // per-order STP override
   } else if (r < 0.80) {
     c.type = MsgType::Cancel;
     c.order_id = rng.chance(0.9) ? recent_id() : rng.below(next_id + 10);
@@ -88,9 +89,9 @@ void apply(Book& b, const Command& c, VectorSink& s) {
 
 std::string describe(const Command& c) {
   char buf[160];
-  std::snprintf(buf, sizeof buf, "type=%d id=%llu side=%d px=%lld qty=%u ord=%d tif=%d flags=%d owner=%u",
+  std::snprintf(buf, sizeof buf, "type=%d id=%llu side=%d px=%lld qty=%llu ord=%d tif=%d flags=%d owner=%u",
                 static_cast<int>(c.type), static_cast<unsigned long long>(c.order_id), static_cast<int>(c.side),
-                static_cast<long long>(c.price), c.qty, static_cast<int>(c.ord_type), static_cast<int>(c.tif), c.flags,
+                static_cast<long long>(c.price), static_cast<unsigned long long>(c.qty), static_cast<int>(c.ord_type), static_cast<int>(c.tif), c.flags,
                 c.owner);
   return buf;
 }
@@ -154,7 +155,7 @@ bool run_seed(std::uint64_t seed, Stp stp, int ops, std::uint64_t& events_compar
 TEST(differential_random_streams_all_stp_policies) {
   std::uint64_t events = 0;
   int seeds = 0;
-  for (Stp stp : {Stp::None, Stp::CancelResting, Stp::CancelIncoming}) {
+  for (Stp stp : {Stp::None, Stp::CancelResting, Stp::CancelIncoming, Stp::DecrementCancel}) {
     for (std::uint64_t seed = 1; seed <= 40; ++seed) {
       ++seeds;
       if (!run_seed(seed, stp, 10'000, events)) return;
@@ -162,7 +163,7 @@ TEST(differential_random_streams_all_stp_policies) {
   }
   std::printf("      %d seeds x 10k ops, %llu events compared byte-for-byte across 5 implementations\n", seeds,
               static_cast<unsigned long long>(events));
-  CHECK(events > 1'000'000);
+  CHECK(events > 1'500'000);
 }
 
 TEST(realistic_workload_digests_agree_and_replay_is_deterministic) {

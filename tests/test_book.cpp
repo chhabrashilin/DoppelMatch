@@ -324,6 +324,81 @@ BOOK_TEST(stp_aware_fok) {
   CHECK(h.book.check_invariants());
 }
 
+// Coinbase's default "decrement and cancel": the smaller order is cancelled and the larger is decremented
+// by its size; equal sizes cancel both. The rules below were confirmed on real Coinbase data
+// (docs/VALIDATION.md): an 11-lot incoming order meeting its own 5-lot resting order was decremented to 6
+// and then traded 6 with the next resting order.
+BOOK_TEST(stp_decrement_cancel_smaller_resting_order) {
+  Harness<Book> h(small_config(Stp::DecrementCancel));
+  h.send(new_order(1, S, 1505, 5, Tif::Day, OrdType::Limit, 0, 7));
+  h.send(new_order(2, S, 1505, 5, Tif::Day, OrdType::Limit, 0, 8));
+  auto ev = h.send(new_order(3, B, 1505, 8, Tif::Day, OrdType::Limit, 0, 7));
+  REQUIRE(ev.size() == 4);
+  CHECK_CANCELED(ev[1], 1, 1505, 5, Reason::SelfTrade);  // own smaller resting order cancelled
+  CHECK_EQ(ev[2].type, EventType::Modified);              // incoming decremented 8 -> 3
+  CHECK_EQ(ev[2].order_id, OrderId{3});
+  CHECK_EQ(ev[2].qty, Qty{3});
+  CHECK(ev[2].reason == Reason::SelfTrade);
+  CHECK_TRADE(ev[3], 3, 2, 1505, 3, 2);
+  CHECK_EQ(h.book.order_count(), 1u);  // only order 2's remaining 2 lots
+  CHECK(h.book.check_invariants());
+}
+
+BOOK_TEST(stp_decrement_cancel_larger_resting_order) {
+  Harness<Book> h(small_config(Stp::DecrementCancel));
+  h.send(new_order(1, S, 1505, 10, Tif::Day, OrdType::Limit, 0, 7));
+  auto ev = h.send(new_order(2, B, 1505, 4, Tif::Day, OrdType::Limit, 0, 7));
+  REQUIRE(ev.size() == 3);
+  CHECK_EQ(ev[1].type, EventType::Modified);  // resting decremented 10 -> 6
+  CHECK_EQ(ev[1].order_id, OrderId{1});
+  CHECK_EQ(ev[1].qty, Qty{6});
+  CHECK_CANCELED(ev[2], 2, 1505, 4, Reason::SelfTrade);  // incoming cancelled
+  CHECK_EQ(h.book.find_order(1)->qty, 6u);
+  CHECK_EQ(h.book.best_ask_qty(), 6u);
+  CHECK(h.book.check_invariants());
+}
+
+BOOK_TEST(stp_decrement_cancel_equal_sizes_cancel_both) {
+  Harness<Book> h(small_config(Stp::DecrementCancel));
+  h.send(new_order(1, S, 1505, 5, Tif::Day, OrdType::Limit, 0, 7));
+  auto ev = h.send(new_order(2, B, 1505, 5, Tif::Day, OrdType::Limit, 0, 7));
+  REQUIRE(ev.size() == 3);
+  CHECK_CANCELED(ev[1], 1, 1505, 5, Reason::SelfTrade);
+  CHECK_CANCELED(ev[2], 2, 1505, 5, Reason::SelfTrade);
+  CHECK_EQ(h.book.order_count(), 0u);
+  CHECK(h.book.check_invariants());
+}
+
+BOOK_TEST(stp_mode_is_chosen_per_order) {
+  // The book defaults to cancel-incoming; one order asks for cancel-resting instead.
+  Harness<Book> h(small_config(Stp::CancelIncoming));
+  h.send(new_order(1, S, 1505, 5, Tif::Day, OrdType::Limit, 0, 7));
+  h.send(new_order(2, S, 1505, 5, Tif::Day, OrdType::Limit, 0, 8));
+  auto ev = h.send(new_order(3, B, 1505, 5, Tif::Day, OrdType::Limit, stp_flag(Stp::CancelResting), 7));
+  REQUIRE(ev.size() == 3);
+  CHECK_CANCELED(ev[1], 1, 1505, 5, Reason::SelfTrade);
+  CHECK_TRADE(ev[2], 3, 2, 1505, 5, 0);
+  // an order without an override uses the book default (cancel incoming)
+  h.send(new_order(4, S, 1506, 5, Tif::Day, OrdType::Limit, 0, 9));
+  ev = h.send(new_order(5, B, 1506, 5, Tif::Day, OrdType::Limit, 0, 9));  // book default: cancel incoming
+  CHECK_CANCELED(ev[1], 5, 1506, 5, Reason::SelfTrade);
+  CHECK(h.book.check_invariants());
+}
+
+BOOK_TEST(stp_decrement_cancel_fok_counts_decrements_but_not_cancellation) {
+  Harness<Book> h(small_config(Stp::DecrementCancel));
+  h.send(new_order(1, S, 1505, 3, Tif::Day, OrdType::Limit, 0, 7));  // own, smaller: decrements the FOK by 3
+  h.send(new_order(2, S, 1505, 5, Tif::Day, OrdType::Limit, 0, 8));
+  auto ev = h.send(new_order(3, B, 1505, 8, Tif::Fok, OrdType::Limit, 0, 7));  // 3 decremented + 5 filled
+  CHECK_TRADE(ev.back(), 3, 2, 1505, 5, 0);
+  h.send(new_order(4, S, 1506, 9, Tif::Day, OrdType::Limit, 0, 7));  // own, larger: would cancel the FOK
+  h.send(new_order(5, S, 1506, 9, Tif::Day, OrdType::Limit, 0, 8));
+  ev = h.send(new_order(6, B, 1506, 4, Tif::Fok, OrdType::Limit, 0, 7));
+  CHECK_CANCELED(ev.back(), 6, 1506, 4, Reason::FokUnfilled);
+  CHECK_EQ(h.book.order_count(), 2u);  // nothing touched
+  CHECK(h.book.check_invariants());
+}
+
 BOOK_TEST(stp_none_allows_self_trade) {
   Harness<Book> h;
   h.send(new_order(1, S, 1505, 5, Tif::Day, OrdType::Limit, 0, 7));

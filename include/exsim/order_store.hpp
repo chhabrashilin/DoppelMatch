@@ -4,9 +4,9 @@
 // physical layout is a compile-time policy. The three layouts below are drop-in interchangeable and
 // are A/B benchmarked against each other (see BENCHMARKS.md):
 //
-//   AosStore     one 48-byte record per order (the conventional `struct Order`).
+//   AosStore     one 56-byte record per order (the conventional `struct Order`).
 //   SoaStore     one array per field: pure structure-of-arrays.
-//   HybridStore  hot/cold split: a 32-byte record with every field the engine touches after
+//   HybridStore  hot/cold split: a 40-byte record with every field the engine touches after
 //                insertion, plus a cold audit array (timestamp, original qty) written once and never
 //                read on the hot path.
 //
@@ -78,7 +78,7 @@ class AosStore : public FreeListStore<AosStore> {
     Side side;
     std::uint8_t flags;
   };
-  static_assert(sizeof(Order) == 48);
+  static_assert(sizeof(Order) == 56);
 
   explicit AosStore(std::uint32_t cap) : o_(cap) { build_free_list(cap); }
 
@@ -138,8 +138,8 @@ class HybridStore : public FreeListStore<HybridStore> {
  public:
   static constexpr const char* kName = "hybrid";
 
-  // Everything the engine reads or writes after insertion, packed to 32 bytes: two records per cache
-  // line, and none straddles a line boundary (a 48-byte record straddles in half the slots).
+  // Everything the engine reads or writes after insertion, packed to 40 bytes (64-bit id and qty, four
+  // 32-bit links/ids, side and flags). It was 32 bytes while quantities were 32-bit.
   struct Record {
     OrderId id;
     Qty qty;
@@ -155,9 +155,8 @@ class HybridStore : public FreeListStore<HybridStore> {
   struct Audit {
     std::uint64_t ts;
     Qty orig_qty;
-    std::uint32_t pad;
   };
-  static_assert(sizeof(Record) == 32 && sizeof(Audit) == 16);
+  static_assert(sizeof(Record) == 40 && sizeof(Audit) == 16);
 
   explicit HybridStore(std::uint32_t cap) : rec_(cap), audit_(cap) { build_free_list(cap); }
 

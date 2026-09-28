@@ -104,8 +104,6 @@ class BookMirror {
   }
 
  private:
-  static constexpr std::uint64_t kMaxQty = 0xFFFF'FFFFull;
-
   void reset_book() {
     BookConfig cfg;
     cfg.min_price = min_px_;
@@ -139,7 +137,6 @@ class BookMirror {
       ++out_of_band_;
       return;
     }
-    if (u.qty > kMaxQty) u.qty = kMaxQty;  // level larger than the engine's quantity type: clamp (never seen on BTCUSDT)
     ++updates_;
     std::uint64_t& cur = slot(side, rel);
     const OrderId id = id_for(rel, side);

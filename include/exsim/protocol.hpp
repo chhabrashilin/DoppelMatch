@@ -32,13 +32,12 @@ struct NewOrder {
   Header hdr;
   std::uint64_t order_id;
   std::int64_t price;
-  std::uint32_t qty;
+  std::uint64_t qty;
   std::uint32_t owner;
   std::uint8_t side;
   std::uint8_t ord_type;
   std::uint8_t tif;
   std::uint8_t flags;
-  std::uint32_t reserved;
 };
 struct Cancel {
   Header hdr;
@@ -48,8 +47,7 @@ struct Modify {
   Header hdr;
   std::uint64_t order_id;
   std::int64_t price;
-  std::uint32_t qty;
-  std::uint32_t reserved;
+  std::uint64_t qty;
 };
 // Outbound execution report: one per Event, plus a Done marker after every command so a client knows
 // when the response to its request is complete. hdr.seq echoes the CLIENT's sequence number.
@@ -60,8 +58,8 @@ struct ExecReport {
   std::uint64_t order_id;
   std::uint64_t maker_id;
   std::int64_t price;
-  std::uint32_t qty;
-  std::uint32_t leaves;
+  std::uint64_t qty;
+  std::uint64_t leaves;
   std::uint8_t event_type;
   std::uint8_t reason;
   std::uint8_t side;
@@ -71,7 +69,7 @@ struct ExecReport {
 #pragma pack(pop)
 
 static_assert(sizeof(Header) == 16 && sizeof(NewOrder) == 48 && sizeof(Cancel) == 24 && sizeof(Modify) == 40);
-static_assert(sizeof(ExecReport) == 56);
+static_assert(sizeof(ExecReport) == 64);
 inline constexpr std::size_t kMaxMessageSize = sizeof(NewOrder);
 inline constexpr std::size_t kReportSize = sizeof(ExecReport);
 
@@ -171,7 +169,7 @@ inline std::size_t encode(const Command& c, std::byte* out) noexcept {
     case MsgType::NewOrder: {
       const NewOrder m{header(sizeof(NewOrder)), c.order_id, c.price, c.qty, c.owner,
                        static_cast<std::uint8_t>(c.side), static_cast<std::uint8_t>(c.ord_type),
-                       static_cast<std::uint8_t>(c.tif), c.flags, 0};
+                       static_cast<std::uint8_t>(c.tif), c.flags};
       std::memcpy(out, &m, sizeof m);
       return sizeof m;
     }
@@ -181,7 +179,7 @@ inline std::size_t encode(const Command& c, std::byte* out) noexcept {
       return sizeof m;
     }
     case MsgType::Modify: {
-      const Modify m{header(sizeof(Modify)), c.order_id, c.price, c.qty, 0};
+      const Modify m{header(sizeof(Modify)), c.order_id, c.price, c.qty};
       std::memcpy(out, &m, sizeof m);
       return sizeof m;
     }

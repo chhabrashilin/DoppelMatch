@@ -47,11 +47,12 @@ class ReferenceBook {
 
     const Price px = market ? 0 : c.price;
     sink.on_event(accepted_event(symbol_, c.order_id, c.side, px, c.qty));
-    if (c.tif == Tif::Fok && !fillable(c.side, limit, c.qty, c.owner))
+    const Stp stp = effective_stp(c.flags, stp_);
+    if (c.tif == Tif::Fok && !fillable(c.side, limit, c.qty, c.owner, stp))
       return sink.on_event(canceled_event(symbol_, c.order_id, c.side, px, c.qty, Reason::FokUnfilled));
 
     bool stp_stop = false;
-    const Qty left = match(c.order_id, c.owner, c.side, limit, c.qty, stp_stop, sink);
+    const Qty left = match(c.order_id, c.owner, c.side, limit, c.qty, stp, stp_stop, sink);
     if (left == 0) return;
     if (stp_stop) return sink.on_event(canceled_event(symbol_, c.order_id, c.side, px, left, Reason::SelfTrade));
     if (market || c.tif != Tif::Day)
@@ -86,7 +87,7 @@ class ReferenceBook {
     index_.erase(it);
     sink.on_event(modified_event(symbol_, c.order_id, loc.side, c.price, c.qty));
     bool stp_stop = false;
-    const Qty left = match(c.order_id, owner, loc.side, c.price, c.qty, stp_stop, sink);
+    const Qty left = match(c.order_id, owner, loc.side, c.price, c.qty, stp_, stp_stop, sink);
     if (left == 0) return;
     if (stp_stop) return sink.on_event(canceled_event(symbol_, c.order_id, loc.side, c.price, left, Reason::SelfTrade));
     rest(c.order_id, owner, loc.side, c.price, left, sink);
@@ -150,18 +151,22 @@ class ReferenceBook {
                              : !bids_.empty() && bids_.begin()->first >= limit;
   }
 
-  bool fillable(Side side, Price limit, Qty qty, OwnerId owner) const {
-    std::uint64_t avail = 0;
+  bool fillable(Side side, Price limit, Qty qty, OwnerId owner, Stp stp) const {
+    std::uint64_t need = qty;
     auto scan = [&](const auto& book, auto in_range) {
       for (const auto& [px, q] : book) {
         if (!in_range(px)) return false;
         for (const Order& o : q) {
-          if (stp_ != Stp::None && o.owner == owner) {
-            if (stp_ == Stp::CancelIncoming) return avail >= qty;
+          if (stp != Stp::None && o.owner == owner) {
+            if (stp == Stp::CancelIncoming) return false;
+            if (stp == Stp::DecrementCancel) {
+              if (o.qty >= need) return false;
+              need -= o.qty;
+            }
             continue;
           }
-          avail += o.qty;
-          if (avail >= qty) return true;
+          if (o.qty >= need) return true;
+          need -= o.qty;
         }
       }
       return false;
@@ -171,27 +176,43 @@ class ReferenceBook {
   }
 
   template <class Sink>
-  Qty match(OrderId taker, OwnerId owner, Side side, Price limit, Qty qty, bool& stp_stop, Sink& sink) {
-    if (side == Side::Buy) return match_side(asks_, taker, owner, side, [&](Price p) { return p <= limit; }, qty, stp_stop, sink);
-    return match_side(bids_, taker, owner, side, [&](Price p) { return p >= limit; }, qty, stp_stop, sink);
+  Qty match(OrderId taker, OwnerId owner, Side side, Price limit, Qty qty, Stp stp, bool& stp_stop, Sink& sink) {
+    if (side == Side::Buy)
+      return match_side(asks_, taker, owner, side, limit, [&](Price p) { return p <= limit; }, qty, stp, stp_stop, sink);
+    return match_side(bids_, taker, owner, side, limit, [&](Price p) { return p >= limit; }, qty, stp, stp_stop, sink);
   }
 
   template <class Book, class InRange, class Sink>
-  Qty match_side(Book& book, OrderId taker, OwnerId owner, Side side, InRange in_range, Qty qty, bool& stp_stop,
-                 Sink& sink) {
+  Qty match_side(Book& book, OrderId taker, OwnerId owner, Side side, Price limit, InRange in_range, Qty qty, Stp stp,
+                 bool& stp_stop, Sink& sink) {
     while (qty > 0 && !book.empty() && in_range(book.begin()->first)) {
       auto lvl = book.begin();
       Queue& q = lvl->second;
       while (qty > 0 && !q.empty()) {
         Order& o = q.front();
-        if (stp_ != Stp::None && o.owner == owner) {
-          if (stp_ == Stp::CancelIncoming) {
+        if (stp != Stp::None && o.owner == owner) {
+          if (stp == Stp::CancelIncoming) {
             stp_stop = true;
             break;
           }
-          sink.on_event(canceled_event(symbol_, o.id, opposite(side), lvl->first, o.qty, Reason::SelfTrade));
+          if (stp == Stp::DecrementCancel && o.qty > qty) {
+            o.qty -= qty;
+            sink.on_event(stp_decrement_event(symbol_, o.id, opposite(side), lvl->first, o.qty));
+            stp_stop = true;
+            break;
+          }
+          const Qty mq = o.qty;
+          sink.on_event(canceled_event(symbol_, o.id, opposite(side), lvl->first, mq, Reason::SelfTrade));
           index_.erase(o.id);
           q.pop_front();
+          if (stp == Stp::DecrementCancel) {
+            if (mq == qty) {
+              stp_stop = true;
+              break;
+            }
+            qty -= mq;
+            sink.on_event(stp_decrement_event(symbol_, taker, side, limit, qty));
+          }
           continue;
         }
         const Qty fill = std::min(o.qty, qty);
