@@ -54,7 +54,12 @@ exsim_executable(exsim_replay   tools/exsim_replay.cpp)
 exsim_executable(exsim_pipeline tools/exsim_pipeline.cpp)
 exsim_executable(exsim_mdreplay tools/exsim_mdreplay.cpp)
 exsim_executable(exsim_mmsim    tools/exsim_mmsim.cpp)
+exsim_executable(exsim_l3replay tools/exsim_l3replay.cpp)
+exsim_executable(exsim_queuestudy tools/exsim_queuestudy.cpp)
+exsim_executable(exsim_difffeed tools/exsim_difffeed.cpp)
+exsim_executable(exsim_features tools/exsim_features.cpp)
 exsim_executable(exsim_bench    bench/exsim_bench.cpp)
+exsim_executable(exsim_bench_index bench/bench_index_deletion.cpp)
 
 exsim_executable(exsim_tests
   tests/test_main.cpp
@@ -75,7 +80,10 @@ if(EXSIM_LIQUIBOOK_DIR AND EXISTS "${EXSIM_LIQUIBOOK_DIR}/src/book/order_book.h"
   add_executable(exsim_bench_liquibook bench/bench_liquibook.cpp "${EXSIM_LIQUIBOOK_DIR}/src/simple/simple_order.cpp")
   target_include_directories(exsim_bench_liquibook SYSTEM PRIVATE "${EXSIM_LIQUIBOOK_DIR}/src")
   target_link_libraries(exsim_bench_liquibook PRIVATE exsim exsim_flags)
-  target_compile_options(exsim_bench_liquibook PRIVATE -Wno-non-virtual-dtor)  # third-party base classes
+  # Liquibook's listener base classes have non-virtual destructors; silence that for this target only
+  # (a source property is applied after the interface flags, so it wins over -Wnon-virtual-dtor).
+  set_property(SOURCE bench/bench_liquibook.cpp "${EXSIM_LIQUIBOOK_DIR}/src/simple/simple_order.cpp"
+               APPEND PROPERTY COMPILE_OPTIONS -Wno-non-virtual-dtor)
 endif()
 
 # Order-entry gateway: needs epoll, so Linux only.
@@ -83,4 +91,5 @@ exsim_executable(exsim_journal tools/exsim_journal.cpp)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   exsim_executable(exsim_server tools/exsim_server.cpp)
   exsim_executable(exsim_client tools/exsim_client.cpp)
+  exsim_executable(exsim_replica tools/exsim_replica.cpp)
 endif()
