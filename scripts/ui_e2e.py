@@ -8,10 +8,11 @@ result back out of the DOM.
 
     python scripts/ui_e2e.py            # needs Chrome, Chromium or Edge (or set CHROME=/path/to/browser)
 
-Under headless Chrome's virtual clock the in-page benchmark reports 0 (time does not advance); the engine's
-speed is measured by wasm/test_wasm.js instead.
+The browser runs in real time and the result is read over the DevTools protocol once the page reports it. An
+earlier version used --virtual-time-budget and --dump-dom; the virtual clock could run the page's timers ahead of
+the engine's WebAssembly compilation, which made the test flaky on CI.
 """
-import os, re, shutil, subprocess, sys, tempfile
+import base64, json, os, re, shutil, socket, struct, subprocess, sys, tempfile, time, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -23,7 +24,7 @@ window.addEventListener("error", e => out.push("FAIL uncaught error: " + e.messa
 function click(id) { document.getElementById(id).click(); }
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 (async () => {
-  for (let i = 0; i < 100 && !book; i++) await wait(50);
+  for (let i = 0; i < 600 && !book; i++) await wait(50);  // real time: up to 30 s for the WebAssembly engine
   ok(!!book, "engine loaded");
   ok(document.getElementById("engine-badge").textContent.includes("WebAssembly"), "badge says WebAssembly");
   ok(document.querySelectorAll("#asks .row").length === 6 && document.querySelectorAll("#bids .row").length === 6, "seeded ladder shows 6+6 levels");
@@ -64,7 +65,9 @@ function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
   await Promise.all(imgs.map(i => i.complete ? 0 : new Promise(r => { i.onload = r; i.onerror = r; })));
   ok(imgs.every(i => i.naturalWidth > 100), "all six figures load (paths resolve): " + imgs.map(i => i.naturalWidth).join(","));
   document.getElementById("e2e").textContent = out.join("\n") + "\n" + (out.some(l => l.startsWith("FAIL")) ? "RESULT: FAIL" : "RESULT: ALL PASS");
-})();
+})().catch(e => {  // an exception must be reported, never leave an empty result
+  document.getElementById("e2e").textContent = out.join("\n") + "\nFAIL exception: " + e + "\nRESULT: FAIL";
+});
 </script>
 '''
 
@@ -84,8 +87,62 @@ def find_browser():
     sys.exit("no browser found; set CHROME=/path/to/chrome")
 
 
+class DevTools:
+    """A minimal Chrome DevTools Protocol client over a WebSocket, standard library only (CI's system Python cannot
+    pip-install). It only needs to send Runtime.evaluate and read the matching reply."""
+
+    def __init__(self, ws_url):
+        m = re.match(r"ws://([^:/]+):(\d+)(/.*)", ws_url)
+        self.sock = socket.create_connection((m.group(1), int(m.group(2))), timeout=30)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((f"GET {m.group(3)} HTTP/1.1\r\nHost: {m.group(1)}:{m.group(2)}\r\nUpgrade: websocket\r\n"
+                           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            head += self.sock.recv(1)
+        if b" 101 " not in head.split(b"\r\n")[0]:
+            raise RuntimeError("DevTools handshake failed: " + head.decode(errors="replace"))
+        self.next_id = 0
+
+    def _recv_exact(self, n):
+        buf = b""
+        while len(buf) < n:
+            chunk = self.sock.recv(n - len(buf))
+            if not chunk:
+                raise RuntimeError("DevTools connection closed")
+            buf += chunk
+        return buf
+
+    def _recv_message(self):
+        data = b""
+        while True:
+            b0, b1 = self._recv_exact(2)
+            n = b1 & 0x7F
+            if n == 126:
+                n = struct.unpack(">H", self._recv_exact(2))[0]
+            elif n == 127:
+                n = struct.unpack(">Q", self._recv_exact(8))[0]
+            data += self._recv_exact(n)
+            if b0 & 0x80:  # final fragment
+                return data.decode()
+
+    def evaluate(self, expression):
+        self.next_id += 1
+        payload = json.dumps({"id": self.next_id, "method": "Runtime.evaluate",
+                              "params": {"expression": expression, "returnByValue": True}}).encode()
+        mask = os.urandom(4)
+        header = bytes([0x81]) + (bytes([0x80 | len(payload)]) if len(payload) < 126
+                                  else bytes([0x80 | 126]) + struct.pack(">H", len(payload)))
+        self.sock.sendall(header + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(payload)))
+        while True:
+            msg = json.loads(self._recv_message())
+            if msg.get("id") == self.next_id:
+                return msg.get("result", {}).get("result", {}).get("value")
+
+
 def main():
     tmp = tempfile.mkdtemp()
+    proc = None
     try:
         shutil.copytree(os.path.join(ROOT, "ui"), os.path.join(tmp, "ui"))
         shutil.copytree(os.path.join(ROOT, "docs"), os.path.join(tmp, "docs"))
@@ -93,16 +150,34 @@ def main():
         html = open(page, encoding="utf8").read().replace("</body>", test + "</body>")
         open(page, "w", encoding="utf8").write(html)
         url = "file:///" + page.replace(os.sep, "/").lstrip("/")
+        profile = os.path.join(tmp, "profile")
+        # Real time, not --virtual-time-budget: a virtual clock can run the page's timers ahead of work that is not
+        # timer-driven (compiling the WebAssembly engine), which made this test flaky on CI.
         cmd = [find_browser(), "--headless=new", "--disable-gpu", "--no-sandbox", "--allow-file-access-from-files",
-               "--virtual-time-budget=15000", "--dump-dom", url]
-        dom = subprocess.run(cmd, capture_output=True, text=True, timeout=180).stdout
-        m = re.search(r'<pre id="e2e"[^>]*>(.*?)</pre>', dom, re.S)
-        if not m:
-            sys.exit("test did not run (no result in the page)")
-        text = re.sub(r"<[^>]+>", "", m.group(1))
+               "--remote-debugging-port=0", f"--user-data-dir={profile}", "--no-first-run", url]
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        port_file = os.path.join(profile, "DevToolsActivePort")
+        deadline = time.time() + 30
+        while not (os.path.exists(port_file) and open(port_file).read().strip()):
+            if time.time() > deadline:
+                sys.exit("browser did not start its DevTools endpoint")
+            time.sleep(0.1)
+        port = int(open(port_file).read().split()[0])
+        targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=10))
+        target = next(t for t in targets if t.get("type") == "page")
+        dt = DevTools(target["webSocketDebuggerUrl"])
+        text, deadline = "", time.time() + 120
+        while "RESULT:" not in text and time.time() < deadline:
+            time.sleep(0.25)
+            text = dt.evaluate("(document.getElementById('e2e') || {}).textContent || ''") or ""
+        if "RESULT:" not in text:
+            sys.exit("test did not finish within 120 s; partial output:\n" + text)
         print(text)
         sys.exit(0 if "RESULT: ALL PASS" in text else 1)
     finally:
+        if proc is not None:
+            proc.kill()
+            proc.wait()
         shutil.rmtree(tmp, ignore_errors=True)
 
 
