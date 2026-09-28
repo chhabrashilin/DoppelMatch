@@ -130,7 +130,7 @@ jobs:
       - run: pip install numpy pandas
       - name: recompute PnL, inventory and spread capture from raw fills and compare with the simulator
         run: |
-          for d in results/*/; do
-            name=$(basename "$d")
-            python scripts/verify_accounting.py --results "$d" --dataset "$name"
+          for g in results/*/grid.csv; do  # market-making runs only (results/ also holds the L3 studies)
+            d=$(dirname "$g")
+            python scripts/verify_accounting.py --results "$d" --dataset "$(basename "$d")"
           done

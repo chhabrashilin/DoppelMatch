@@ -44,7 +44,7 @@ python3 scripts/ui_e2e.py 2>/dev/null | tail -1 || echo "UI test skipped (needs 
 
 step "7/7 accounting audit of committed study results"
 if python3 -c "import pandas, numpy" 2>/dev/null; then
-  for d in results/*/; do python3 scripts/verify_accounting.py --results "$d" --dataset "$(basename "$d")" | tail -1; done
+  for g in results/*/grid.csv; do d=$(dirname "$g"); python3 scripts/verify_accounting.py --results "$d" --dataset "$(basename "$d")" | tail -1; done
 else
   echo "skipped (needs python3 with numpy and pandas)"
 fi
