@@ -69,8 +69,8 @@ EMSCRIPTEN_KEEPALIVE int ex_submit(int type, double id, int side, int ord_type, 
   return static_cast<int>(g_sink.events.size());
 }
 
-// Event layout (40 bytes): u64 order_id @0, u64 maker_id @8, i64 price @16, u32 qty @24, u32 leaves @28,
-// u32 symbol @32, u8 type @36, u8 reason @37, u8 side @38, u8 request @39.
+// Event layout (48 bytes): u64 order_id @0, u64 maker_id @8, i64 price @16, u64 qty @24, u64 leaves @32,
+// u32 symbol @40, u8 type @44, u8 reason @45, u8 side @46, u8 request @47.
 EMSCRIPTEN_KEEPALIVE const Event* ex_events() { return g_sink.events.data(); }
 EMSCRIPTEN_KEEPALIVE int ex_event_size() { return static_cast<int>(sizeof(Event)); }
 
@@ -85,9 +85,9 @@ EMSCRIPTEN_KEEPALIVE int ex_depth(int side, int max_levels) {
   g_depth.clear();
   g_book->for_each_order(static_cast<Side>(side), [&](Price p, OrderId, Qty q) {
     if (!g_depth.empty() && g_depth.back().px == p) {
-      g_depth.back().qty += q, ++g_depth.back().orders;
+      g_depth.back().qty += static_cast<std::uint32_t>(q), ++g_depth.back().orders;  // UI sizes fit in 32 bits
     } else if (static_cast<int>(g_depth.size()) < max_levels) {
-      g_depth.push_back({static_cast<std::int32_t>(p), q, 1});
+      g_depth.push_back({static_cast<std::int32_t>(p), static_cast<std::uint32_t>(q), 1});
     }
   });
   return static_cast<int>(g_depth.size());
@@ -100,7 +100,7 @@ EMSCRIPTEN_KEEPALIVE int ex_queue(int side, int price) {
   g_book->for_each_order(static_cast<Side>(side), [&](Price p, OrderId id, Qty q) {
     if (p == price) {
       const auto v = g_book->find_order(id);
-      g_queue.push_back({id, q, v ? v->owner : 0});
+      g_queue.push_back({id, static_cast<std::uint32_t>(q), v ? v->owner : 0});
     }
   });
   return static_cast<int>(g_queue.size());
@@ -112,7 +112,7 @@ EMSCRIPTEN_KEEPALIVE unsigned ex_find(double id, int* px, int* side, unsigned* o
   const auto v = g_book->find_order(static_cast<OrderId>(id));
   if (!v) return 0;
   *px = static_cast<int>(v->price), *side = v->side == Side::Buy ? 0 : 1, *owner = v->owner;
-  return v->qty;
+  return static_cast<unsigned>(v->qty);
 }
 
 // Self-contained throughput test on a private book: `n` random orders from a fixed seed, measured

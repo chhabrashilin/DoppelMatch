@@ -333,8 +333,8 @@ class Engine {
     for (let i = 0; i < n; i++) {
       const p = base + i * sz;
       const e = { id: Number(dv.getBigUint64(p, true)), maker: Number(dv.getBigUint64(p + 8, true)), price: Number(dv.getBigInt64(p + 16, true)),
-                  qty: dv.getUint32(p + 24, true), leaves: dv.getUint32(p + 28, true), type: dv.getUint8(p + 36), reason: dv.getUint8(p + 37),
-                  side: dv.getUint8(p + 38) === 0 ? "buy" : "sell" };
+                  qty: Number(dv.getBigUint64(p + 24, true)), leaves: Number(dv.getBigUint64(p + 32, true)), type: dv.getUint8(p + 44), reason: dv.getUint8(p + 45),
+                  side: dv.getUint8(p + 46) === 0 ? "buy" : "sell" };
       if (e.type === EV.TRADE) { this.trades++; this.volume += e.qty; }
       out.push(e);
     }

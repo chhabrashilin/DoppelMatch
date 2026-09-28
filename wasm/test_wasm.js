@@ -24,7 +24,7 @@ createEngine().then(M => {
     for (let i = 0; i < n; i++) {
       const o = base + i * sz;
       out.push({ id: Number(dv.getBigUint64(o, true)), maker: Number(dv.getBigUint64(o + 8, true)), price: Number(dv.getBigInt64(o + 16, true)),
-                 qty: dv.getUint32(o + 24, true), leaves: dv.getUint32(o + 28, true), type: dv.getUint8(o + 36), reason: dv.getUint8(o + 37), side: dv.getUint8(o + 38) });
+                 qty: Number(dv.getBigUint64(o + 24, true)), leaves: Number(dv.getBigUint64(o + 32, true)), type: dv.getUint8(o + 44), reason: dv.getUint8(o + 45), side: dv.getUint8(o + 46) });
     }
     return out;
   }
@@ -32,7 +32,7 @@ createEngine().then(M => {
   const send = (type, id, side, ot, tif, post, px, qty, owner = 1) => events(submit(type, id, side, ot, tif, post, px, qty, owner));
 
   init();
-  check(evSize() === 40, "Event is 40 bytes");
+  check(evSize() === 48, "Event is 48 bytes");
 
   // price-time priority: the same scenario the C++ tests use
   send(NEW, 1, SELL, LIMIT, DAY, 0, 1005, 5);
