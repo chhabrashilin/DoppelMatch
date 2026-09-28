@@ -27,11 +27,28 @@ capacity (8 MiB) but held ~4,000 live orders, and a well-mixed hash scattered th
 touched a cold cache line and page. A hash that keeps live sequential ids near each other gave 2.3x. See DESIGN.md section 4.
 
 **That hash sounds attackable.**
-It is. Keys crafted against the `k ^ (k >> bits)` fold all land in one home slot and lookups go from ~1.5-3 ns to ~770-950 ns (300-500x, two campaigns)
-(`exsim_bench --adversarial`; the test `order_index_locality_hash_stays_correct_under_a_worst_case_collision_attack` shows
-correctness survives, only speed suffers). It is safe when the exchange assigns order ids. `fmix64` is not a fix either: it is
-invertible, so an informed attacker can still craft collisions. A gateway taking client ids needs a keyed hash. The current
-gateway forwards client ids, which is a documented limit.
+It was. Keys crafted against the `k ^ (k >> bits)` fold all land in one home slot and lookups go from ~1.5-3 ns to ~770-950 ns
+(300-500x, `exsim_bench --adversarial`). `fmix64` would not have fixed it: it is invertible, so an informed attacker can still
+craft collisions. The fix is what real venues do: clients never choose the engine's keys. The gateway assigns sequential
+exchange ids before sequencing (`client_ids.hpp`), and the only table keyed by client input uses SipHash-1-3 under a random
+per-process key. Over TCP, 40,000 colliding client ids cost the same server CPU as sequential ones (0.057 s vs 0.076 s), and
+39 to 59 times more across runs when passed straight to the engine (`scripts/e2e_sessions.py`, `--trust-client-ids`).
+
+**How do reports work if the engine never sees client ids?**
+Every event is translated back per session: an order's owner sees its own client id and anyone else sees 0, so counterparties
+are anonymous. A duplicate client id of a live order maps to that order's exchange id, so the engine rejects the duplicate in
+its normal validation order; an id that is not live maps to 0, which is never assigned, so the engine reports it unknown. A
+single client's report stream is therefore byte-identical to a local engine run on its own ids, which the client verifies.
+Makers now get an unsolicited fill report too; before this change they got nothing, which a one-client test cannot notice.
+
+**Tell me about a performance bug you found.**
+The hash-flooding test's *baseline* was slow: 40,000 resting orders with ordinary sequential ids, cancelled oldest first, spent
+81% of all instructions in the id index (callgrind). Consecutive ids fill one contiguous run of the table, and linear-probing
+deletion has to scan to the next empty slot because a later entry might belong earlier, so every cancel scanned the rest of
+the run: O(n^2). Sequential ids are exactly what the gateway had just started issuing. Robin Hood insertion keeps each run
+sorted by home slot, so deletion can stop at the first entry sitting in its home slot. Oldest-first erase: 56,517 ns to 3.4 ns
+at 40,000 live orders (`exsim_bench_index`); the standard workload is unchanged or better in the cache simulation (branch
+mispredictions -17%).
 
 **Why did structure-of-arrays lose?**
 Every operation touches most fields of *one* order, so SoA turns one cache line into up to nine. Cachegrind: 2.1x the L1
@@ -46,20 +63,41 @@ baseline). `aos` is the default because it has the fewest simulated misses, whic
 ## Correctness
 
 **How do you know the engine is right?**
-Four independent lines of evidence:
+Six independent lines of evidence:
 1. Differential testing: identical random streams to a naive `std::map` book and to every optimized variant; events must be
-   byte-identical after every command, and full book state is compared every 50 commands (1.7M events, 120 seeds, all three
-   self-trade policies).
-2. Mutation testing: I planted four bugs by hand; each was caught (one by an invariant audit, one by a snapshot divergence,
-   one by an event divergence, one by unit tests).
-3. Cross-check against Liquibook, an independent engine: 933,619 trades and 96,761,274 lots, identical, on 3M commands.
-4. Real data: the reconstructed Binance book equals the exchange's own snapshots (573/573, 458,400 levels), and fault
-   injection proves the check can fail.
+   byte-identical after every command, and full book state is compared every 50 commands (all four self-trade modes).
+2. A second implementation in another language: a purely functional OCaml model (`ocaml/`), with expect tests and QCheck
+   properties, emits identical events to the C++ engine on 10M random commands (14.5M events).
+3. Mutation testing: planted bugs are caught, in the C++ (four by hand) and in the OCaml model (a wrong equal-size
+   decrement-and-cancel rule, caught on the first seed of the cross-language diff).
+4. Cross-check against Liquibook, an independent engine: 933,619 trades and 96,761,274 lots, identical, on 3M commands.
+5. Coinbase itself: replaying twelve full days of Coinbase's order-by-order feed (791M messages), the engine reproduces all
+   284,539,832 arrivals and modifies and all 7,503,266 trades exactly ([VALIDATION.md](VALIDATION.md)).
+6. The reconstructed Binance book equals the exchange's own snapshots (573/573, 458,400 levels).
+Each real-data check is shown to be able to fail by fault injection.
 
 **What are the tests *not* covering?**
-The reference book and the fast books share my understanding of the rules. Agreement with Liquibook covers Day/IOC limit
-orders and cancels only (it lacks post-only, FOK, modify and STP), so those features are covered by the reference book and
-by hand-written scenarios, not by a third-party oracle.
+The C++ reference book and the OCaml model are both mine, so they share my reading of the rules; agreement between them rules
+out implementation bugs, not specification mistakes. Coinbase is the independent specification, but only for the features
+Coinbase has and exposes: time in force, post-only and accounts are not in its feed and are inferred, and the inference is
+counted. Liquibook covers Day/IOC limit orders and cancels only.
+
+**What did Coinbase's data teach you that the docs did not?**
+That a modify which crosses publishes its matches before the `change`, whose new size is the post-trade remainder, and that a
+modify which fills completely sends no `change` at all; that the snapshot is taken while the stream runs, so newer messages
+precede it in the file; that the archive has gaps and Tardis records a fresh snapshot on reconnect; that self-trade prevention
+is visible if you look for it, in all four of Coinbase's modes (a cancel or decrement of another order inside an arrival's
+block; an arrival that stops with liquidity still in front of it after trading, which is cancel-newest; an arrival cancelled
+together with its own resting order, which is cancel-both); that decrement-and-cancel reduces a funds order's funds, not its
+size; and that the exchange occasionally reports an order "filled" when its published matches do not add up (41 orders in
+twelve days). Each of these started as a divergence, and two of the divergences were bugs in my replay, not the feed.
+
+**How do you know you did not just tune the replay until it agreed?**
+Three things. Every rule is a statement about Coinbase's documented or observable behaviour, checked against the raw JSON,
+never a per-day or per-order exception; one binary produced all twelve days. The inputs the rules supply (time in force,
+accounts, funds sizes) are only ever inferred from the order's own messages, never from the engine's prediction. And the
+check demonstrably fails when the engine is wrong: dropping every 1,000th cancel produces divergences and failed whole-book
+comparisons within five minutes of data, which CI runs on every push.
 
 ## Concurrency and durability
 
@@ -78,6 +116,39 @@ Write-ahead plus flush-before-ack: any command a client saw acknowledged is in t
 discarded; corrupt records stop the read and distrust everything after. `--sync os` survives a process crash, not power
 loss; `batch`/`every` add `fsync`. I tested a real `kill -9` under load and compared the recovered digest with an independent
 offline replay. I did **not** test power loss or disk failure.
+
+## Replication and failover
+
+**Why replicate the input rather than the state?**
+The engine is a deterministic function of its ordered input, so the sequenced command stream *is* the state, compressed. Every
+replica that applies the same commands reaches the same book, and event digests prove it. Shipping state would need
+snapshots and a consistency protocol; shipping input needs only ordering and gap repair. This is the design in Brian Nigito's
+"How to Build an Exchange" talk.
+
+**UDP loses packets. How does the backup know it has everything?**
+Every datagram names the sequence number of its first command, so a jump is a known range. The backup stashes what arrived
+early, asks the primary's retransmitter for exactly that range, and re-asks after 20 ms without progress; duplicates are
+ignored. Idle heartbeats carry the next sequence number, because without them a lost *final* datagram is indistinguishable
+from silence. With 2% of datagrams dropped on purpose, the backup repaired every gap and ended with an identical digest.
+
+**When is a client's order acknowledged, and what survives a crash?**
+With `--replicate-wait`, only after the backup has acknowledged the command, and the backup acknowledges only what it has
+applied and flushed to its own journal. So a promoted backup holds every acknowledged order. In one kill -9 run the client
+had been acknowledged 314,081 commands and the backup held 314,680, an exact prefix of the dead primary's journal; it was
+serving new orders 361 ms after the kill. Commands the primary sequenced but never replicated would be lost with it, and
+none of them can have been acknowledged.
+
+**What went wrong while building it?**
+The journal-prefix check failed once: the backup held 25 commands more than the dead primary's journal. The publisher had
+sent a datagram whenever 25 commands accumulated, before the batch's journal flush, so a `kill -9` could destroy commands
+the backup already had. No acknowledged order was at risk (acknowledgements wait for the backup), but it broke write-ahead
+ordering, and the earlier passing runs had been timing luck. Now the publisher only stages until the journal is flushed.
+
+**What does this not handle?**
+It runs on one host with loopback multicast. There is one backup, no snapshot for a replica that falls behind the ring, no
+re-replication after a promotion, and no fencing: a primary that is partitioned rather than dead would not know it had been
+replaced, so a real deployment needs leases or an arbiter. If the backup stops acknowledging, the primary waits 500 ms, says
+so, and continues alone (availability over durability, explicitly).
 
 ## The benchmark environment
 
@@ -106,14 +177,16 @@ not edge. See RESEARCH.md for the intervals and for what one 30-minute trending 
 
 **What would change your conclusion?**
 A different regime (this BTC session trended up), maker rebates (I test -0.5 bps but a real rebate tier depends on volume),
-a lower-latency queue position than my model assumes, or evidence that my cancellation proration (a neutral assumption; a
-canceller's queue position is unobservable in L2 data) is systematically biased.
+or a lower-latency queue position than my model assumes. The cancellation proration was the other candidate, and I tested
+it: order-by-order data shows cancellations come mostly from the back of long queues, so proportional proration is
+optimistic, but rerunning the grid with the rule that fits the ground truth best (power 3) leaves the conclusion intact.
 
 **How does the fill model work, and where is it weakest?**
 Virtual quotes join the back of the displayed queue. Trades at the price consume the queue ahead first; trades through the
 price fill in full; unexplained level shrinkage is cancellation, prorated by queue share. Weakest points: no own market
 impact, no hidden/iceberg orders, book data at 100 ms granularity (so "mid at fill" can be up to 100 ms stale), and the
-proration assumption. The optimistic-fill comparison quantifies the model's importance: for touch quoting a naive backtest
+proration rule, which RESEARCH.md part 2 scores against Coinbase's queue: proportional predicts 15.1% of fills too early,
+power 3 (now `--cancel-power 3`) 7.6%. The optimistic-fill comparison quantifies the model's importance: for touch quoting a naive backtest
 counts ~7x the fills.
 
 ## Process
