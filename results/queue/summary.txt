@@ -1,0 +1,23 @@
+414206 probes over 12 day(s); queue-sensitive (no trade-through, >= 2 orders at join): 153818
+  of those, truly filled at their price within the horizon: 85.8%
+
+rule   precision  recall  fills pred/true  median err s  mean |err| s  early   late
+front      0.968   1.000    1.033 [1.02,1.04]          0.00          4.50  30.3%   0.0%
+prop       0.989   0.996    1.007 [1.00,1.01]          0.00          2.78  15.1%   9.8%
+pow2       0.996   0.995    0.999 [1.00,1.00]          0.00          2.21   8.3%  12.3%
+pow3       0.997   0.995    0.998 [1.00,1.00]          0.00          2.11   7.6%  11.7%
+log        0.976   0.998    1.022 [1.01,1.03]          0.00          4.16  23.5%  10.3%
+back       1.000   0.993    0.993 [0.99,0.99]          0.00          2.16   0.0%  20.3%
+
+95% day-bootstrap intervals: early share / mean |err| s
+  front  early [24.9%, 35.6%]   mean |err| [2.45, 7.04]
+  prop   early [11.8%, 18.7%]   mean |err| [1.70, 4.08]
+  pow2   early [6.5%, 10.3%]   mean |err| [1.54, 2.99]
+  pow3   early [5.9%, 9.5%]   mean |err| [1.48, 2.84]
+  log    early [18.9%, 28.2%]   mean |err| [2.47, 6.24]
+  back   early [0.0%, 0.0%]   mean |err| [1.62, 2.75]
+
+normalized rank of cancelled orders at the touch (0 front, 1 back; 0.5 = uniform), mean over days:
+   2-4 orders: mean rank 0.562 [0.514, 0.607], back half 57.2% [51.8%, 62.1%], days 12, range 0.419-0.683
+   5-9 orders: mean rank 0.676 [0.641, 0.714], back half 71.6% [67.7%, 75.9%], days 12, range 0.600-0.831
+   10+ orders: mean rank 0.725 [0.690, 0.766], back half 76.5% [72.8%, 80.6%], days 12, range 0.625-0.873

@@ -1,0 +1,44 @@
+12 days: 2025-10-01, 2025-11-01, 2025-12-01, 2026-01-01, 2026-02-01, 2026-03-01, 2026-04-01, 2026-05-01, 2026-06-01, 2026-07-01, 2026-08-01, 2026-09-01
+bars (valid): 1,036,605
+
+1. queue imbalance at the best quotes -> direction of the next mid move (leave one day out)
+  qimb   AUC 0.687 [0.677, 0.695]   accuracy 0.634 [0.626, 0.643]   (majority-class baseline 0.539); worst day AUC 0.652
+  dimb5  AUC 0.641 [0.631, 0.650]   accuracy 0.598 [0.592, 0.605]   (majority-class baseline 0.539); worst day AUC 0.607
+  P(next move up | queue imbalance), pooled:
+      (-1.001, -0.8]  0.337  (n=253,317)
+        (-0.8, -0.6]  0.433  (n=78,677)
+        (-0.6, -0.4]  0.462  (n=70,047)
+        (-0.4, -0.2]  0.502  (n=67,151)
+         (-0.2, 0.0]  0.527  (n=64,751)
+          (0.0, 0.2]  0.561  (n=64,488)
+          (0.2, 0.4]  0.583  (n=67,187)
+          (0.4, 0.6]  0.613  (n=73,722)
+          (0.6, 0.8]  0.655  (n=76,517)
+          (0.8, 1.0]  0.770  (n=212,648)
+
+2. contemporaneous price impact of order-flow imbalance (Cont, Kukanov and Stoikov 2014)
+    1 s intervals: R^2 0.324 [0.275, 0.376], range over days 0.225-0.499
+   10 s intervals: R^2 0.310 [0.246, 0.376], range over days 0.128-0.521
+   60 s intervals: R^2 0.235 [0.176, 0.293], range over days 0.082-0.413
+
+3. predicting the mid return over the next h seconds (OLS, leave one day out; OOS R^2 vs zero forecast)
+  feature@h           OOS R^2 (mean [95% CI])  days > 0         p    Holm p
+  qimb@1s          0.0044 [ -0.0180,   0.0227]     9/12       0.35         1
+  dimb5@1s         0.0023 [ -0.0156,   0.0163]     9/12        0.4         1
+  ofi1@1s          0.0060 [  0.0041,   0.0080]    12/12    7.3e-05   0.00095 *
+  ofi10@1s         0.0014 [  0.0007,   0.0020]    11/12    0.00086    0.0077 *
+  timb1@1s         0.0002 [ -0.0015,   0.0016]     9/12       0.43         1
+  qimb@10s         0.0106 [  0.0070,   0.0150]    12/12    0.00024    0.0024 *
+  dimb5@10s        0.0079 [  0.0053,   0.0102]    11/12    5.2e-05   0.00077 *
+  ofi1@10s         0.0021 [  0.0015,   0.0029]    12/12    6.8e-05   0.00095 *
+  ofi10@10s        0.0008 [  0.0003,   0.0014]     9/12       0.01      0.08
+  timb1@10s        0.0003 [  0.0000,   0.0005]     9/12      0.027      0.19
+  qimb@60s         0.0033 [  0.0021,   0.0046]    12/12    0.00016     0.002 *
+  dimb5@60s        0.0027 [  0.0018,   0.0037]    12/12    0.00016     0.002 *
+  ofi1@60s         0.0001 [ -0.0000,   0.0003]     9/12      0.044      0.27
+  ofi10@60s       -0.0001 [ -0.0003,   0.0001]     5/12       0.88         1
+  timb1@60s       -0.0001 [ -0.0005,   0.0001]     6/12       0.83         1
+
+  median spread 0.0013 bps; std of mid return: 1 s 0.71 bps, 10 s 2.46 bps, 60 s 6.14 bps
+
+figure: /mnt/c/Users/chhab/Downloads/Github/chhabrashilin/exchange-sim/docs/img/signals_coinbase.png

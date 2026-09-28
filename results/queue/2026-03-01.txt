@@ -1,0 +1,22 @@
+probes 34558 (every 5 s at the best bid and ask), horizon 300 s; truly filled within horizon: 32854 (95.1%)
+rule       fills precision    recall   med err s med |err| s     queue err  fill-rate x
+front      33049     0.994     1.000        0.00        0.00         0.000         1.01
+prop       32865     0.999     0.999        0.00        0.00         0.000         1.00
+pow2       32827     0.999     0.998        0.00        0.00         0.000         1.00
+pow3       32827     0.999     0.999        0.00        0.00         0.000         1.00
+log        32951     0.996     0.999        0.00        0.00         0.000         1.00
+back       32787     1.000     0.998        0.00        0.00         0.000         1.00
+
+cancellations and size reductions at the touch: 1071255
+relative queue position (quantity ahead / level; 0 = front, 1 = back), share per decile:
+   46.2%   2.0%   2.2%   2.2%   2.2%   2.7%   2.3%   2.3%   2.3%  35.6% 
+(uniform would be 10% per decile)
+rank of the cancelled order among the level's orders (by count, front to back), by queue length:
+  2-4 orders  n=396868  25.3%   0.0%   3.0%   6.5%   0.0%  27.9%  18.7%  18.7%   0.0%   0.0% 
+  5-9 orders  n=331677   4.6%   1.9%   2.8%   1.7%   3.8%   4.4%  12.5%   7.6%  60.7%   0.0% 
+  10+ orders  n=30872    2.4%   1.5%   1.6%   1.6%   1.8%   2.8%   4.2%   7.8%  19.0%  57.5% 
+  (311838 cancels hit a level holding a single order)
+normalized rank of cancelled orders (0 front, 1 back; 0.5 if every order were equally likely):
+  2-4 orders  mean 0.676, front half 30.2% vs back half 69.8%
+  5-9 orders  mean 0.831, front half 11.4% vs back half 88.6%
+  10+ orders  mean 0.873, front half 8.2% vs back half 91.8%
