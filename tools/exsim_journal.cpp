@@ -2,12 +2,15 @@
 //
 //   exsim_journal verify  j.bin      CRC-check every record; report clean / torn tail / corrupt
 //   exsim_journal replay  j.bin      replay into a fresh engine; print event digest and book state
+//   exsim_journal prefix  a.bin b.bin  check that a holds exactly the first records of b (failover check)
 //
 // `replay` uses the same engine and risk configuration as exsim_server (defaults), so its digest can be
 // compared with the digest the server prints after `--recover`.
 
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #include "exsim/journal.hpp"
 #include "exsim/matching_engine.hpp"
@@ -18,7 +21,7 @@ using namespace exsim;
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    std::fprintf(stderr, "usage: exsim_journal verify|replay <journal> [--symbols N] [--risk]\n");
+    std::fprintf(stderr, "usage: exsim_journal verify|replay|prefix <journal> [<journal>] [--symbols N] [--risk]\n");
     return 2;
   }
   const std::string cmd = argv[1], path = argv[2];
@@ -35,6 +38,23 @@ int main(int argc, char** argv) {
                   static_cast<unsigned long long>(s.valid_bytes),
                   s.status == JournalStatus::Clean ? "clean" : s.status == JournalStatus::TornTail ? "torn-tail" : "CORRUPT");
       return s.status == JournalStatus::Corrupt ? 1 : 0;
+    }
+    if (cmd == "prefix") {
+      // After a failover: the promoted backup's journal must be a prefix of the dead primary's journal
+      // (the primary may hold a few sequenced but unreplicated, hence unacknowledged, commands).
+      if (argc < 4) throw std::invalid_argument("usage: exsim_journal prefix <shorter> <longer>");
+      std::vector<Command> a;
+      journal_scan(path, [&](const Command& c) { a.push_back(c); });
+      std::uint64_t i = 0, mismatch = 0;
+      const auto s = journal_scan(argv[3], [&](const Command& c) {
+        if (i < a.size() && std::memcmp(&a[i], &c, sizeof c) != 0 && mismatch == 0) mismatch = i + 1;
+        ++i;
+      });
+      const bool ok = mismatch == 0 && a.size() <= s.records;
+      std::printf("prefix=%s first_records=%llu second_records=%llu%s\n", ok ? "yes" : "NO",
+                  static_cast<unsigned long long>(a.size()), static_cast<unsigned long long>(s.records),
+                  mismatch ? (" first_mismatch_at_record=" + std::to_string(mismatch)).c_str() : "");
+      return ok ? 0 : 1;
     }
     if (cmd == "replay") {
       MatchingEngine<DefaultBook> engine(symbols, BookConfig{});
