@@ -1,0 +1,95 @@
+self-trade prevention: 10783 links inferred between 10771 orders (16 of them from cancel-newest: an arrival stopped with crossing liquidity left); 1557 arrivals cancelled together with their own resting order (cancel both); engine STP on
+seeded from exchange snapshot seq 129263728248: 113572 orders (engine band 0..16777216 ticks)
+replayed 1709 messages that arrived before the snapshot but are newer than it
+  ... 2000000 records, 674412 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 4000000 records, 1392709 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 6000000 records, 2110633 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 8000000 records, 2825337 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 10000000 records, 3539403 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 12000000 records, 4258791 episodes, 0 diverged, 0 repairs, 0 rebuilds
+sequence gap: 129276377865 -> 129276378276 (410 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129276382583: 113850 orders (engine band 0..16777216 ticks)
+replayed 1453 messages that arrived before the snapshot but are newer than it
+sequence gap: 129277324282 -> 129277324463 (180 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129277325735: 113891 orders (engine band 0..16777216 ticks)
+replayed 2637 messages that arrived before the snapshot but are newer than it
+  ... 14000000 records, 4895217 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 16000000 records, 5611774 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 18000000 records, 6328160 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 20000000 records, 7048576 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 22000000 records, 7766244 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 24000000 records, 8490191 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 26000000 records, 9205841 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 28000000 records, 9921716 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 30000000 records, 10638250 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 32000000 records, 11360601 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 34000000 records, 12076570 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 36000000 records, 12801621 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 38000000 records, 13531002 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 40000000 records, 14254115 episodes, 0 diverged, 0 repairs, 0 rebuilds
+sequence gap: 129304941168 -> 129304942578 (1409 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129304947204: 110628 orders (engine band 0..16777216 ticks)
+replayed 7486 messages that arrived before the snapshot but are newer than it
+  ... 42000000 records, 14944091 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 44000000 records, 15666026 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 46000000 records, 16383772 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  filled with 38 unmatched: order 15123322 buy @ 7146800 (done seq 129310721085, done px 7146800)
+  filled with 74 unmatched: order 15129540 buy @ 7146520 (done seq 129310737692, done px 7146520)
+  ... 48000000 records, 17105824 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  filled with 74 unmatched: order 15457176 buy @ 7137199 (done seq 129311766989, done px 7137199)
+  filled with 80 unmatched: order 15741484 buy @ 7138571 (done seq 129312664507, done px 7138571)
+sequence gap: 129312765835 -> 129312767396 (1560 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129312777736: 110265 orders (engine band 0..16777216 ticks)
+replayed 8580 messages that arrived before the snapshot but are newer than it
+  ... 50000000 records, 17785562 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  filled with 89 unmatched: order 16182553 buy @ 7130340 (done seq 129314048834, done px 7130340)
+sequence gap: 129314498894 -> 129314499600 (705 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129314500646: 110550 orders (engine band 0..16777216 ticks)
+replayed 5644 messages that arrived before the snapshot but are newer than it
+  ... 52000000 records, 18464833 episodes, 0 diverged, 0 repairs, 0 rebuilds
+sequence gap: 129315540956 -> 129315541527 (570 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129315544606: 110540 orders (engine band 0..16777216 ticks)
+replayed 4987 messages that arrived before the snapshot but are newer than it
+  ... 54000000 records, 19137241 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 56000000 records, 19848550 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 58000000 records, 20567295 episodes, 0 diverged, 0 repairs, 0 rebuilds
+sequence gap: 129321340272 -> 129321343251 (2978 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129321344323: 109365 orders (engine band 0..16777216 ticks)
+replayed 1991 messages that arrived before the snapshot but are newer than it
+  ... 60000000 records, 21248396 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 62000000 records, 21969384 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 64000000 records, 22692787 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 66000000 records, 23413284 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 68000000 records, 24130372 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 70000000 records, 24842522 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 72000000 records, 25556540 episodes, 0 diverged, 0 repairs, 0 rebuilds
+sequence gap: 129336181022 -> 129336181395 (372 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129336181972: 110605 orders (engine band 0..16777216 ticks)
+replayed 3033 messages that arrived before the snapshot but are newer than it
+  ... 74000000 records, 26225288 episodes, 0 diverged, 0 repairs, 0 rebuilds
+sequence gap: 129337682096 -> 129337682382 (285 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129337683433: 110358 orders (engine band 0..16777216 ticks)
+replayed 3125 messages that arrived before the snapshot but are newer than it
+  ... 76000000 records, 26896934 episodes, 0 diverged, 0 repairs, 0 rebuilds
+sequence gap: 129338961090 -> 129338961710 (619 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129338964112: 110266 orders (engine band 0..16777216 ticks)
+replayed 5634 messages that arrived before the snapshot but are newer than it
+  ... 78000000 records, 27579858 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 80000000 records, 28298678 episodes, 0 diverged, 0 repairs, 0 rebuilds
+sequence gap: 129343527169 -> 129343527311 (141 messages missing from the archive); waiting for the next snapshot
+resynchronized from exchange snapshot seq 129343529614: 110671 orders (engine band 0..16777216 ticks)
+replayed 2916 messages that arrived before the snapshot but are newer than it
+  ... 82000000 records, 28972016 episodes, 0 diverged, 0 repairs, 0 rebuilds
+records 83913766 in 167.7 s; sequence gaps 11; truth-book inconsistencies 0; matches with no known taker 0
+gaps in the archived feed: 11, recovered from a later snapshot: 11; episodes open at a gap (not scored): 11; messages covered by a snapshot instead: 35044
+orders received 26372449 (market 35541, funds-denominated 10946), cancels 25393440, modifies 3280330 (6162 filled completely), STP changes 968
+limit prices beyond the engine's band: 100690 arrivals or fill-modifies clamped to the band edge (never rest), 52 rest out of band (not replayable), 6 modified out of the band
+reported filled with part of the size never matched (exchange inconsistency): 5 orders, 355 lots
+inferred from lifecycle: 445503 IOC/FOK, 147035 post-only/zero-fill, 7129 arrivals with a self-trade-prevention mode
+
+episodes (arrivals + price/size modifies): 29652716; with trades on either side: 497985
+  reproduced exactly (same makers, prices, sizes, in order; same resting remainder): 29652716 (100.0000%)
+  diverged: 0 (0 involving self-trade prevention, 0 other)
+Coinbase matches: 776578; predicted exactly by the engine: 776578 (100.0000%)
+resting remainders checked against Coinbase's 'open': 25744318, mismatched 0
+full-book comparisons (engine vs truth, every order in queue order): 167, failed 0; local level repairs 0, full rebuilds from truth 0

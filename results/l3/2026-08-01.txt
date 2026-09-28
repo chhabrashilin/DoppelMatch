@@ -1,0 +1,37 @@
+self-trade prevention: 2128 links inferred between 2124 orders (4 of them from cancel-newest: an arrival stopped with crossing liquidity left); 157 arrivals cancelled together with their own resting order (cancel both); engine STP on
+seeded from exchange snapshot seq 133543988913: 108642 orders (engine band 0..16777216 ticks)
+replayed 4098 messages that arrived before the snapshot but are newer than it
+  ... 2000000 records, 652122 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 4000000 records, 1337191 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 6000000 records, 2023229 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 8000000 records, 2706682 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 10000000 records, 3390558 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 12000000 records, 4073576 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 14000000 records, 4754044 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 16000000 records, 5434383 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 18000000 records, 6122256 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 20000000 records, 6802177 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  filled with 1658 unmatched: order 7163114 sell @ 6303500 (done seq 133565493931, done px 6303500)
+  ... 22000000 records, 7481287 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 24000000 records, 8163812 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 26000000 records, 8844924 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 28000000 records, 9531402 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 30000000 records, 10224458 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 32000000 records, 10927477 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 34000000 records, 11630798 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 36000000 records, 12322361 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 38000000 records, 13014809 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 40000000 records, 13707019 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 42000000 records, 14391620 episodes, 0 diverged, 0 repairs, 0 rebuilds
+records 42758642 in 20.7 s; sequence gaps 0; truth-book inconsistencies 0; matches with no known taker 0
+orders received 13960598 (market 50200, funds-denominated 1981), cancels 13575402, modifies 690558 (2464 filled completely), STP changes 1531
+limit prices beyond the engine's band: 11283 arrivals or fill-modifies clamped to the band edge (never rest), 66 rest out of band (not replayable), 11 modified out of the band
+reported filled with part of the size never matched (exchange inconsistency): 1 orders, 1658 lots
+inferred from lifecycle: 200387 IOC/FOK, 25209 post-only/zero-fill, 1933 arrivals with a self-trade-prevention mode
+
+episodes (arrivals + price/size modifies): 14651090; with trades on either side: 254322
+  reproduced exactly (same makers, prices, sizes, in order; same resting remainder): 14651090 (100.0000%)
+  diverged: 0 (0 involving self-trade prevention, 0 other)
+Coinbase matches: 352014; predicted exactly by the engine: 352014 (100.0000%)
+resting remainders checked against Coinbase's 'open': 13684736, mismatched 0
+full-book comparisons (engine vs truth, every order in queue order): 85, failed 0; local level repairs 0, full rebuilds from truth 0

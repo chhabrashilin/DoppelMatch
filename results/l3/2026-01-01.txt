@@ -1,0 +1,25 @@
+self-trade prevention: 307 links inferred between 305 orders (2 of them from cancel-newest: an arrival stopped with crossing liquidity left); 109 arrivals cancelled together with their own resting order (cancel both); engine STP on
+seeded from exchange snapshot seq 118886583281: 118216 orders (engine band 0..16777216 ticks)
+replayed 544 messages that arrived before the snapshot but are newer than it
+  ... 2000000 records, 679950 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 4000000 records, 1405007 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 6000000 records, 2146166 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 8000000 records, 2886132 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 10000000 records, 3626762 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 12000000 records, 4370288 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 14000000 records, 5110725 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 16000000 records, 5852248 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 18000000 records, 6595630 episodes, 0 diverged, 0 repairs, 0 rebuilds
+  ... 20000000 records, 7340127 episodes, 0 diverged, 0 repairs, 0 rebuilds
+records 21014690 in 14.5 s; sequence gaps 0; truth-book inconsistencies 0; matches with no known taker 0
+orders received 6585668 (market 17505, funds-denominated 9353), cancels 6181379, modifies 1130248 (78 filled completely), STP changes 3
+limit prices beyond the engine's band: 130 arrivals or fill-modifies clamped to the band edge (never rest), 86 rest out of band (not replayable), 7 modified out of the band
+reported filled with part of the size never matched (exchange inconsistency): 0 orders, 0 lots
+inferred from lifecycle: 225529 IOC/FOK, 68248 post-only/zero-fill, 264 arrivals with a self-trade-prevention mode
+
+episodes (arrivals + price/size modifies): 7715830; with trades on either side: 243516
+  reproduced exactly (same makers, prices, sizes, in order; same resting remainder): 7715830 (100.0000%)
+  diverged: 0 (0 involving self-trade prevention, 0 other)
+Coinbase matches: 320115; predicted exactly by the engine: 320115 (100.0000%)
+resting remainders checked against Coinbase's 'open': 6274300, mismatched 0
+full-book comparisons (engine vs truth, every order in queue order): 42, failed 0; local level repairs 0, full rebuilds from truth 0
