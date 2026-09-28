@@ -235,8 +235,70 @@ Keys of the form `(i << bits) | (i ^ C)` all share one home slot under `k ^ (k >
 walk a chain of 2,048 entries: a ~300x slowdown here (an earlier, quieter run measured 767 ns vs 1.5 ns,
 ~500x). Correctness is unaffected (`order_index_locality_hash_stays_correct_under_a_worst_case_collision_attack`).
 `fmix64` is not an answer either: it is invertible, so an informed attacker can craft collisions for it
-too. The defense is exchange-assigned order ids or a keyed hash. The gateway currently forwards client
-ids, which is listed as a limit.
+too. The defense is exchange-assigned order ids, and that is what the gateway now does
+([client_ids.hpp](include/exsim/client_ids.hpp)): the engine only sees sequential ids issued by the venue,
+and the one table keyed by client input uses SipHash-1-3 under a random key. Measured end to end over TCP
+(`scripts/e2e_sessions.py`, server CPU time for 40,000 resting orders then 40,000 cancels):
+
+| client ids sent | server CPU |
+|---|---:|
+| sequential | 0.076 s |
+| crafted to collide, gateway assigns exchange ids (default) | 0.057 s |
+| crafted to collide, passed to the engine (`--trust-client-ids`) | 3.375 s (59x) |
+
+A later run on the same machine: 0.047 s, 0.050 s and 1.949 s (39x). The ratio moves with the host; the gap does not close.
+
+## The id index: deletion needed Robin Hood order
+
+The session test above first failed in an unexpected way: its *baseline*, with ordinary sequential ids,
+used 2.25 s of CPU for 80,000 commands. Callgrind put 81% of all instructions in the id index. The cause:
+40,000 resting orders with consecutive ids occupy one contiguous run of the table, and linear-probing
+deletion (Knuth's Algorithm R) must scan from the deleted slot to the next *empty* slot, since any later
+entry might belong earlier. Cancelling oldest-first made every cancel scan the rest of the run: O(n^2).
+Sequential ids are exactly what the gateway now issues, so this was a real exposure, not an attack.
+
+The fix keeps each run in Robin Hood order (entries sorted by home slot; on insert, the entry further from
+its home keeps the slot). Deletion can then stop at the first entry sitting in its home slot, and an
+absent-key lookup can stop once it has probed further than the resident entry. The probe distance is
+recomputed from the stored fingerprint, so the slot stays 8 bytes. `exsim_bench_index` (a copy of the old
+algorithm against the current one, capacity 2^18, ns per erase, best of 5):
+
+| live orders | erase order | linear probing | Robin Hood | speedup |
+|---:|---|---:|---:|---:|
+| 1,000 | oldest first | 1,923.5 | 4.0 | 485x |
+| 1,000 | random | 52.5 | 20.6 | 3x |
+| 4,000 | oldest first | 4,571.3 | 4.4 | 1,032x |
+| 4,000 | random | 27.6 | 10.4 | 3x |
+| 40,000 | oldest first | 56,516.9 | 3.4 | 16,403x |
+| 40,000 | random | 40.6 | 9.6 | 4x |
+
+On the standard benchmark workload the change is neutral to slightly positive in the deterministic cache
+simulation (1M messages, `aos`, before vs after): instructions -0.8%, data references -4.0%, D1 and LL
+misses unchanged (4.16M, 1.51M), branch mispredictions -16.9% (1.47M to 1.22M). The design-point
+throughput figures earlier in this file were measured before the change. A full run afterwards (with 64-bit
+quantities as well, 15 interleaved reps, a quiet host) gave `aos` 27.49 M msg/s best and 23.21 median, 2.60x over
+the `std::map` reference (paired median, 95% CI 2.16x to 2.81x): consistent with both earlier campaigns.
+The differential and model tests (`order_index_*`) now also assert the Robin Hood invariant after every
+operation.
+
+## 64-bit quantities
+
+Quantities were widened from 32 to 64 bits so real Coinbase sizes (integer satoshis; 32 bits overflow at
+42.9 BTC) fit exactly. Cost, from the cache simulation (1M messages, same workload, both builds with the
+earlier index so that only the width differs): the AoS record grows from 48 to 56 bytes, Event from 40 to
+48, and the hybrid hot record from 32 to 40.
+
+| | AoS 32-bit | AoS 64-bit | change | Hybrid 32-bit | Hybrid 64-bit | change |
+|---|---:|---:|---:|---:|---:|---:|
+| instructions | 160.97M | 172.78M | +7.3% | 159.62M | 175.85M | +10.2% |
+| data references | 79.72M | 87.02M | +9.2% | 81.56M | 88.87M | +9.0% |
+| D1 misses | 3.99M | 4.16M | +4.3% | 4.17M | 4.49M | +7.7% |
+| LL data misses | 1.48M | 1.51M | +1.8% | 1.76M | 1.78M | +1.2% |
+
+A real cost, mostly in instructions and L1 traffic rather than in the last-level misses that dominated
+the earlier design decisions; wall-clock differences on this host were inside run-to-run noise. Correctness
+on real data is not negotiable, so 64 bits it is. With the Robin Hood index as well, the current AoS build
+is at 171.31M instructions and 4.15M D1 misses: +6.4% and +4.2% over the original 32-bit build.
 
 ## Gateway (TCP, loopback, WSL2)
 
@@ -254,6 +316,32 @@ host with unpinned processes, so read them as an existence proof, not a tuned fi
 
 The p50 is the true cost of a TCP round trip through the whole stack; the millisecond p99 is the
 hypervisor and unpinned scheduling, as the jitter probe predicts.
+
+## Replication (loopback multicast, WSL2)
+
+What the hot backup costs (`scripts/e2e_replication.sh` for correctness; three interleaved rounds of the
+same measurement for cost, on an otherwise idle machine). "Async" publishes the sequenced stream to the backup
+without waiting; "wait" (`--replicate-wait`) releases a client's acknowledgement only after the backup has
+acknowledged the batch, which is what makes failover lossless.
+
+| mode | closed-loop throughput, median (range) | round trip at 50,000 msg/s open loop, p50 median (range) | mean wait for the backup per batch |
+|---|---:|---:|---:|
+| no replication | 0.368 M cmds/s (0.365-0.372) | 23.5 us (21.2-27.5) | - |
+| async | 0.340 M cmds/s (0.317-0.382) | 45.5 us (41.6-106.7) | - |
+| replicate-wait | 0.242 M cmds/s (0.198-0.360) | 182.0 us (166.3-225.9) | 76-86 us |
+
+The price of never losing an acknowledged order is one loopback round trip to the backup per batch: about
+160 us at the median on this host, most of it scheduling of three unpinned processes on a virtualized
+laptop. Throughput suffers less than latency because the wait is per batch, not per command, and it is noisy
+(one round of replicate-wait matched the unreplicated throughput). p99 figures (0.5 to 17 ms) are the
+hypervisor again and are not compared.
+
+| Failover test (kill -9 of the primary under load, 1% datagram loss) | Result, three runs |
+|---|---|
+| backup takes over (silence threshold 300 ms) | serving orders 309 to 364 ms after the kill |
+| acknowledged commands lost | none (e.g. 314,081 acknowledged, 314,680 held) |
+| backup journal vs dead primary's journal | exact prefix every time (after fixing the publish order; see DESIGN.md section 7) |
+| promoted state vs offline replay of its journal | identical digests |
 
 ## WebAssembly
 
@@ -292,7 +380,7 @@ message.
 thread is the bottleneck: the ingress ring is full throughout, and the market-data ring never
 backs up. It runs below single-threaded replay because every command now arrives on a cache line
 freshly written by another core. A consumer-side prefetch of already-published ring slots
-(`SpscQueue::prefetch`) recovered **+11–15%**, measured as an interleaved A/B (mean 4.09 → 4.72 M
+(`SpscQueue::prefetch`) recovered **+11-15%**, measured as an interleaved A/B (mean 4.09 → 4.72 M
 msg/s).
 
 **Paced** (ingress stamps are *scheduled* send times, which corrects for coordinated omission):
@@ -313,6 +401,7 @@ hypothesis.
 ## Reproducing
 
 ```bash
+scripts/bench_baremetal.sh                         # everything below on real hardware, machine config recorded
 scripts/bench.sh                                   # design points, SPSC, replay determinism, pipeline, jitter
 scripts/cache_profile.sh                           # perf counters if available, else cachegrind
 build/release/exsim_pipeline --jitter 10           # how noisy is this machine right now?
@@ -322,4 +411,11 @@ scripts/fetch_liquibook.sh                         # then re-run cmake with the 
 cmake -S . -B build/release -DEXSIM_LIQUIBOOK_DIR=third_party/liquibook
 cmake --build build/release --target exsim_bench_liquibook && build/release/exsim_bench_liquibook
 scripts/e2e_gateway.sh build/release               # gateway correctness, latency, crash recovery
+build/release/exsim_bench_index                    # id-index deletion: linear probing vs Robin Hood
+python3 scripts/e2e_sessions.py build/release      # server CPU with colliding client ids, with and without exchange ids
+scripts/e2e_replication.sh build/release           # replication correctness, failover, and a throughput comparison
 ```
+
+The 32-bit vs 64-bit quantity comparison used a build of the commit before the change (`git worktree add` it, build
+it, and run `scripts/cache_profile.sh` on both); the replication cost table used the loop in `scripts/e2e_replication.sh`
+section R3 plus an open-loop client run (`exsim_client --rate 50000`) against each of the three server modes.
