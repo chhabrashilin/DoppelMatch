@@ -152,7 +152,7 @@ partition_run() {  # partition_run <announce|silent>
   fi
   wait "$PRIMARY" 2>/dev/null || true
   wait "$CLI" || true
-  grep -E "FENCED|REPLICA_LOST.*halting" "$W/r5$mode.p.log" | head -1
+  grep -m1 -E "FENCED|REPLICA_LOST.*halting" "$W/r5$mode.p.log"
   grep -q "reason=$expect" "$W/r5$mode.p.log" && echo "the resumed primary halted ($expect) instead of serving: OK" \
     || { echo "FAIL: the resumed primary did not stop for the expected reason ($expect)"; cat "$W/r5$mode.p.log"; exit 1; }
   ACKED=$(awk '/^ACKED/ {print $2}' "$W/r5$mode.c.log")

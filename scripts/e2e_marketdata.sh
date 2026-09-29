@@ -46,7 +46,7 @@ run() {  # run <name> <md-drop> <listener starts after this many journal bytes (
   kill -TERM "$srv"; wait "$srv" || true
   wait "$lis" || { echo "FAIL: the subscriber did not reach the end of the feed"; cat "$W/$name.l.log"; exit 1; }
   grep MARKET_DATA "$W/$name.s.log"
-  grep -E "^SYNCED" "$W/$name.l.log" | head -1
+  grep -m1 -E "^SYNCED" "$W/$name.l.log"  # -m1, not | head: under pipefail a long log makes grep die of SIGPIPE
   grep MD_END "$W/$name.l.log"
   local a b
   a=$(field l2 "$W/$name.s.log"); b=$(field l2 "$W/$name.l.log")
