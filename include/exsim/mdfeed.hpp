@@ -111,7 +111,8 @@ class Publisher {
     ++stats_.trades;
   }
 
-  // Sends the staged entries as incremental packets; publishes a snapshot when one is due.
+  // Sends the staged entries as incremental packets; publishes a snapshot when one is due. The snapshot is taken
+  // only at the end of the batch, so the sequence number it carries is the last packet of the state it shows.
   template <class Engine>
   void flush(const Engine& engine) {
     for (std::size_t i = 0; i < staged_.size(); i += kPerPacket) {
@@ -122,8 +123,9 @@ class Publisher {
       else
         send(Kind::Incremental, seq_, 0, 0, 1, staged_.data() + i, n);
       ++stats_.packets;
-      if (every_ != 0 && ++since_snapshot_ >= every_) snapshot(engine);
+      ++since_snapshot_;
     }
+    if (every_ != 0 && since_snapshot_ >= every_) snapshot(engine);
     staged_.clear();
     last_send_ns_ = seqstream::now_ns();
   }

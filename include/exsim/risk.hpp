@@ -67,7 +67,9 @@ class RiskGate {
     if (halt_all_ || halted_[c.symbol]) return Reason::RiskHalted;
     if (c.qty > cfg_.max_qty) return Reason::RiskMaxQty;
     const bool priced = c.type == MsgType::Modify || c.ord_type == OrdType::Limit;
-    if (priced && cfg_.max_notional != 0 && static_cast<std::uint64_t>(c.price < 0 ? 0 : c.price) * c.qty > cfg_.max_notional)
+    // price * qty > max, tested as price > max / qty: the product itself can overflow 64 bits and wrap under the cap.
+    if (priced && cfg_.max_notional != 0 && c.qty != 0 &&
+        static_cast<std::uint64_t>(c.price < 0 ? 0 : c.price) > cfg_.max_notional / c.qty)
       return Reason::RiskMaxNotional;
     if (priced && cfg_.collar_ticks != 0 && last_px_[c.symbol] != 0) {
       const Price d = c.price - last_px_[c.symbol];

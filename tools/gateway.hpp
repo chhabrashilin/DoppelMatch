@@ -206,6 +206,22 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
       std::fflush(stdout);
     }
   };
+  // A failed journal write (disk full, I/O error) means an acknowledgement could no longer be backed by the log, so
+  // the primary stops acknowledging, exactly as when it is fenced.
+  bool journal_failed = false;
+  auto journal_io = [&](auto&& op) {
+    if (journal_failed) return false;
+    try {
+      op();
+      return true;
+    } catch (const std::exception& e) {
+      journal_failed = true, halted = "JOURNAL_ERROR";
+      std::printf("JOURNAL_ERROR %s at seq=%llu: no further acknowledgements\n", e.what(),
+                  static_cast<unsigned long long>(seq));
+      std::fflush(stdout);
+      return false;
+    }
+  };
   std::vector<std::byte> chunk(1 << 16);
 
   auto close_conn = [&](int fd) {
@@ -330,7 +346,7 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
         cmd.seq = ++seq;              // the sequencer's order is THE order
         cmd.owner = c.owner;          // identity comes from the session, never from the client
         cmd.ts = seqstream::now_ns();
-        journal.append(cmd);          // write-ahead
+        if (!journal_io([&] { journal.append(cmd); })) break;  // write-ahead: no log, no processing
         if (pub != nullptr) pub->publish(cmd);
         journaled_any = true;
         mentioned.clear();
@@ -349,25 +365,27 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
         c.out.resize(at + wire::kReportSize);
         wire::encode_done(cmd.symbol, client_seq, c.out.data() + at);
         ++handled;
-        if (cfg.sync_mode == "every") journal.sync();
-        else if (cfg.sync_mode == "batch" && ++since_sync >= cfg.batch) journal.sync(), since_sync = 0;
+        if (cfg.sync_mode == "every" || (cfg.sync_mode == "batch" && ++since_sync >= cfg.batch)) {
+          since_sync = 0;
+          if (!journal_io([&] { journal.sync(); })) break;
+        }
       }
+      if (halted != nullptr) break;
       if (broken) { close_conn(fd); continue; }
       c.in_len -= off;
       std::memmove(c.in.data(), c.in.data() + off, c.in_len);
       touched.push_back(fd);
     }
     // Flush the journal to the OS, and hand the batch to the replicas, BEFORE any response leaves.
-    if (journaled_any) {
-      journal.flush();
+    if (journaled_any && journal_io([&] { journal.flush(); })) {
       if (pub != nullptr) {
         if (!pub->fenced()) pub->flush();
         if (cfg.wait_replica && !replica_lost && halted == nullptr) wait_for_replica(seq);
       }
     }
     if (halted != nullptr) {
-      // The batch's commands are journaled but not acknowledged by a backup: no response may leave. Clients see
-      // their connection close and must reconnect to whichever primary is current.
+      // The batch is not durable (journal error) or not held by the backup (fenced, backup lost): no response may
+      // leave. Clients see their connection close and must reconnect to whichever primary is current.
       std::vector<int> fds;
       for (const auto& [fd, c] : conns) fds.push_back(fd);
       for (const int fd : fds) close_conn(fd);
@@ -392,7 +410,7 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
     }
   }
 
-  journal.sync();
+  journal_io([&] { journal.sync(); });
   if (pub != nullptr) {
     pub->end();
     const auto& s = pub->stats();

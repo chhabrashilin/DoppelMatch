@@ -20,6 +20,7 @@
 #pragma once
 
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -153,24 +154,28 @@ class JournalWriter {
   JournalWriter& operator=(const JournalWriter&) = delete;
   ~JournalWriter() { if (fp_) std::fclose(fp_); }
 
+  // Every write path throws on failure. A journal that silently drops a record (disk full, I/O error) would let the
+  // gateway acknowledge a command that recovery cannot bring back; callers must stop acknowledging instead.
   void append(const Command& c) {
     std::byte buf[kCrcPrefix + wire::kMaxMessageSize];
     const std::uint32_t len = static_cast<std::uint32_t>(wire::encode(c, buf + kCrcPrefix));
     std::memcpy(buf, &c.ts, 8);
     std::memcpy(buf + 8, &c.owner, 4);
     const RecordMeta m{len, Crc32c::of(buf, kCrcPrefix + len), c.ts, c.owner, 0};
-    std::fwrite(&m, 1, sizeof m, fp_);
-    std::fwrite(buf + kCrcPrefix, 1, len, fp_);
+    if (std::fwrite(&m, 1, sizeof m, fp_) != sizeof m || std::fwrite(buf + kCrcPrefix, 1, len, fp_) != len)
+      fail("write");
     ++records_;
   }
 
   // flush() hands data to the OS (survives a process crash); sync() forces it to stable storage
-  // (survives power loss).
-  void flush() { std::fflush(fp_); }
+  // (survives power loss). Buffered writes surface their errors here, so both are checked.
+  void flush() {
+    if (std::fflush(fp_) != 0) fail("flush");
+  }
   void sync() {
-    std::fflush(fp_);
+    flush();
 #if defined(__linux__)
-    ::fsync(::fileno(fp_));
+    if (::fsync(::fileno(fp_)) != 0) fail("fsync");
 #endif
   }
   std::uint64_t records_written() const { return records_; }
@@ -179,6 +184,9 @@ class JournalWriter {
   JournalWriter(const std::string& path, const char* mode) {
     fp_ = std::fopen(path.c_str(), mode);
     if (fp_ == nullptr) throw std::runtime_error("cannot open journal " + path);
+  }
+  [[noreturn]] static void fail(const char* what) {
+    throw std::runtime_error(std::string("journal ") + what + " failed: " + std::strerror(errno));
   }
   std::FILE* fp_ = nullptr;
   std::uint64_t records_ = 0;

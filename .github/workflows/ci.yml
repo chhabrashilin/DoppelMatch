@@ -93,6 +93,14 @@ jobs:
       - name: line and branch coverage of include/exsim and the gateway
         run: LLVM_SUFFIX=-18 bash scripts/coverage.sh build
 
+  planted-bugs:
+    name: planted bugs (the test suite must catch each one)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build g++-14
+      - run: python3 scripts/mutation_check.py --cxx g++-14
+
   fuzzing:
     name: fuzzing (libFuzzer with ASan and UBSan)
     runs-on: ubuntu-24.04

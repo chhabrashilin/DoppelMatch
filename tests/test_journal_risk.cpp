@@ -140,6 +140,21 @@ TEST(journal_detects_a_flipped_bit_and_distrusts_everything_after_it) {
   std::filesystem::remove(junk);
 }
 
+TEST(journal_write_errors_are_reported_not_swallowed) {
+#if defined(__linux__)
+  // /dev/full accepts the open and fails every write with ENOSPC. A journal that ignored it would let the gateway
+  // acknowledge commands that were never logged.
+  if (!std::filesystem::exists("/dev/full")) return;
+  bool threw = false;
+  try {
+    auto w = JournalWriter::create("/dev/full");
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  CHECK(threw);
+#endif
+}
+
 // ---------------- risk ----------------
 
 namespace {
@@ -168,6 +183,16 @@ TEST(risk_rejects_oversized_orders_and_notional) {
   CHECK_REJECTED(f.send(modify(2, 1500, 500))[0], 2, Reason::RiskMaxQty);
   CHECK_EQ(f.engine.book(0).order_count(), 1u);  // rejected orders never reached the book
   CHECK_EQ(f.gate->rejected(), 3ull);
+}
+
+TEST(risk_notional_check_does_not_overflow) {
+  // 2^33 ticks * 2^31 lots wraps a 64-bit product to 0, which would pass any cap if multiplied directly.
+  RiskFixture f;
+  f.cfg.max_qty = Qty{1} << 40;
+  f.cfg.max_notional = 1'000'000;
+  f.make();
+  Command c = new_order(1, Side::Buy, Price{1} << 33, Qty{1} << 31);
+  CHECK_REJECTED(f.send(c)[0], 1, Reason::RiskMaxNotional);
 }
 
 TEST(risk_price_collar_tracks_the_last_trade) {
