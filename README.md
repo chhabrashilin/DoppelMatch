@@ -1,7 +1,8 @@
 # exchange-sim
 
 A price-time priority matching engine in C++20, the exchange around it (a sequenced gateway with a write-ahead journal,
-exchange-assigned order ids, and a hot backup fed over multicast that takes over when the primary dies), a second
+exchange-assigned order ids, a hot backup fed over multicast that takes over when the primary dies and fences it if it
+was only paused, and a level-2 market-data feed with snapshot recovery), a second
 implementation of the matching rules in OCaml, and research on **real exchange data**: twelve full days of Coinbase's
 order-by-order feed and an hour of Binance's book. Every claim below is measured, tested against an independent oracle, or
 shown to be false and reported that way.
@@ -15,7 +16,8 @@ WebAssembly (65 KB), with a live order book you can trade against, and the study
 |---|---|---|
 | **It matches like a real exchange.** Replaying twelve full days of Coinbase BTC-USD order-by-order data (791 million messages), the engine reproduces **all 284,539,832** arrivals and modifies exactly (same makers, prices, sizes, order and resting remainder) and **all 7,503,266** trades. Every divergence met on the way was traced to a feed rule or a replay bug. | Two books side by side: one applies Coinbase's messages literally, the other is the engine given only the inputs. Periodic whole-book comparisons; fault injection proves the check can fail. | [docs/VALIDATION.md](docs/VALIDATION.md) |
 | **Two independent implementations agree.** A purely functional OCaml model emits identical events to the C++ engine on 10M random commands (14.5M events, all order types and self-trade modes); a planted bug is caught on the first seed. | Expect tests (`ppx_expect`), QCheck properties, a cross-language differential test in CI. | [ocaml/](ocaml/), `scripts/ocaml_diff.sh` |
-| **A replicated exchange that survives kill -9 without losing an acknowledged order.** The primary multicasts its sequenced input; a hot backup repairs every gap (with 2% of datagrams dropped on purpose), stays bit-identical, and on the primary's death takes over in ~0.4 s holding every acknowledged command. | End-to-end test with real sockets, real `kill -9`, journal-prefix and digest checks. | [DESIGN.md section 7](docs/DESIGN.md#7-replication-and-failover) |
+| **A replicated exchange that survives kill -9 without losing an acknowledged order, and does not split its brain.** The primary multicasts its sequenced input; a hot backup repairs every gap (with 2% of datagrams dropped on purpose), stays bit-identical, and on the primary's death takes over in ~0.4 s holding every acknowledged command. A primary that was only paused wakes up fenced by the new epoch (or halts on its own when its backup stops acknowledging). Two failures in a row survive: the promoted backup replicates onward, and a new backup starts from a shipped journal. | End-to-end tests with real sockets, `kill -9`, `SIGSTOP`, journal-prefix and digest checks. | [DESIGN.md section 7](docs/DESIGN.md#7-replication-and-failover) |
+| **Market data a client can trust.** A level-2 incremental feed with periodic snapshots, published only after commit; with 2% of packets dropped, a subscriber detects every gap, rebuilds from snapshots, and ends with a book digest equal to the engine's. | End-to-end test: lossless, lossy and late-joining subscribers, digests compared. | [DESIGN.md section 7](docs/DESIGN.md#7-replication-and-failover) |
 | **Fast, allocation-free matching.** 18-26 M msg/s on one core, p50 52-106 ns / p99 564-879 ns per message, zero heap allocations on the hot path. About 3x a textbook `std::map` engine and 18-22x [Liquibook](https://github.com/enewhuis/liquibook), with identical trades. | Two benchmark campaigns with bootstrap intervals; a test counts allocations. | [BENCHMARKS.md](BENCHMARKS.md) |
 | **Hash flooding is closed, and so is an O(n^2) cancel path it uncovered.** Clients never choose the engine's keys; the test for that exposed that cancelling consecutive ids oldest-first was quadratic, fixed with Robin Hood ordering (up to 16,400x on that pattern, neutral elsewhere). | Server CPU over TCP with crafted ids; a deletion benchmark against the old algorithm; cache simulation. | [BENCHMARKS.md](BENCHMARKS.md#the-id-index-deletion-needed-robin-hood-order) |
 | **Research with honest answers.** Passive market making loses ~1.3-2 bps of notional to adverse selection on both BTC and ETH. L3 ground truth shows cancellations come disproportionately from the back of long queues, and which L2 queue model gets fills right. Queue imbalance predicts the next price move out of sample (AUC 0.687 on held-out days); predicting returns is statistically real but economically tiny. | Day-level out-of-sample tests, block and day bootstraps, Holm correction, an independent accounting audit. | [docs/RESEARCH.md](docs/RESEARCH.md) |
@@ -46,7 +48,8 @@ cmake --preset release && cmake --build --preset release
 scripts/verify_all.sh                    # every offline correctness check
 
 build/release/exsim_bench --spsc                                  # design points + SPSC ring
-scripts/e2e_replication.sh build/release                          # multicast, gap repair, kill -9 failover
+scripts/e2e_replication.sh build/release                          # gap repair, failover, fencing, double failover
+scripts/e2e_marketdata.sh build/release                           # level-2 feed: loss, snapshot recovery, late joiner
 python3 scripts/e2e_sessions.py build/release                     # two sessions; hash flooding vs exchange ids
 (cd ocaml && dune runtest) && scripts/ocaml_diff.sh build/release # OCaml model and cross-language agreement
 
@@ -120,12 +123,22 @@ deeper than its seed snapshot.
 - **Real-exchange oracles**: Coinbase L3 (twelve days), Binance snapshots, Liquibook.
 - **Fault injection everywhere a check could be vacuous**: dropped cancels (L3), dropped level updates (L2), dropped
   datagrams (replication), planted engine and model bugs (mutation testing), truncated journals.
+- **Fuzzing** (libFuzzer with ASan and UBSan, in CI): the order-entry decoder, journal recovery (structure-aware: valid
+  records then a damaged tail; the valid prefix must survive), and a differential fuzzer where every production book must
+  agree with the reference book event for event.
+- **Coverage**: 93.5% of lines and 81.7% of branches of the engine and infrastructure headers over every suite, 100% of the
+  lines of the order book and the id index (Clang source-based, `scripts/coverage.sh`). Coverage says code ran; the
+  differential tests and oracles say it was right.
+- **Mutation checks on the tests themselves**: each "break it" exercise in [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) was
+  applied to a scratch copy and confirmed to be caught.
 - **Zero-allocation hot path** is a test (a global `operator new` counter); ASan+UBSan on the suite and the end-to-end
   tests, TSan on the ring and the pipeline.
-- **Durability and replication**: real `kill -9` of the server and of the primary, journal-prefix and digest checks.
+- **Durability and replication**: real `kill -9` of the server and of two primaries in a row, `SIGSTOP` of a primary
+  (fencing), journal-prefix and digest checks.
 - **Accounting audit**: every market-making run's PnL recomputed from raw fill logs with no shared code.
-- **CI**: GCC and Clang with `-Werror`, sanitizers, real-data checks (including 5 minutes of Coinbase fetched live), the
-  gateway, replication and session tests, the OCaml model, Liquibook, WebAssembly and the browser UI.
+- **CI**: GCC and Clang with `-Werror`, sanitizers, fuzzing, coverage, real-data checks (including 5 minutes of Coinbase
+  fetched live), the gateway, replication, market-data and session tests, the OCaml model, Liquibook, WebAssembly and the
+  browser UI.
 
 ## Bugs and wrong turns
 
@@ -157,15 +170,17 @@ include/exsim/           the engine and infrastructure (header-only)
   order_index.hpp          id index (Robin Hood) price_bitmap.hpp next-best-price
   reference_book.hpp       naive oracle        matching_engine.hpp  routing
   protocol.hpp journal.hpp wire, write-ahead log, CRC32C
-  client_ids.hpp           exchange-assigned ids, SipHash        seqstream.hpp  sequenced multicast, gap repair
+  client_ids.hpp           exchange-assigned ids, SipHash        seqstream.hpp  sequenced multicast, gap repair, epochs
+  mdfeed.hpp               level-2 market data: incrementals, snapshots, subscriber book
   risk.hpp spsc_queue.hpp  pre-trade risk, lock-free ring
   md.hpp md_mirror.hpp     Binance L2 capture + book reconstruction
   l3.hpp                   Coinbase L3 records + truth book
   mm.hpp mm_sim.hpp        queue model, strategies, simulation loop
-tools/                   server, replica, client, journal, l3replay, queuestudy, features, difffeed, mdreplay, mmsim, ...
+tools/                   server, replica, client, mdlisten, journal, l3replay, queuestudy, features, difffeed, mmsim, ...
 ocaml/                   the OCaml reference model, expect tests, property tests
 bench/                   design-point suite, index deletion, Liquibook head-to-head
 tests/                   unit, differential, allocation, journal, risk, market-making
+fuzz/                    libFuzzer targets: book (differential), wire decoder, journal recovery
 scripts/                 capture, fetch, convert, experiments, analyses, audits, e2e tests, CI helpers
 wasm/  ui/               WebAssembly build and browser explorer
 results/  data/  docs/   study outputs, sample capture, write-ups and figures
@@ -185,8 +200,10 @@ and Brian Nigito's talk "How to Build an Exchange" (the sequencer and replicated
 - **No bare-metal numbers yet.** WSL2 hides the PMU and injects jitter; cache results are a simulator (no L2/TLB/prefetcher).
   Tails above ~p99 measure the hypervisor. `scripts/bench_baremetal.sh` produces the whole suite, with hardware counters
   and the machine's configuration recorded, on any Linux box; reports go to `results/baremetal/`.
-- **Replication is one host, one backup.** Loopback multicast with injected loss, no snapshot for a replica that falls behind
-  the retransmission ring, no re-replication after promotion, and no fencing against a partitioned (not dead) primary.
+- **Replication is one host, one backup at a time, and not consensus.** Loopback multicast with injected loss. Failure is
+  detected by timeout, with no external arbiter or leases: safety under a partition comes from fencing and from the halt
+  rule (a primary without an acknowledging backup stops), which gives up availability rather than risk a split brain. The
+  market-data feed recovers by snapshot only; a real feed adds a retransmission service for small gaps.
 - **Level 3 validation is one product on one venue**, days spread over a year. Time in force, post-only and accounts are not
   in the feed; they are inferred from each order's lifecycle, and every inference is counted.
 - **The market-making study is about an hour of Binance data.** Intervals are wide and are reported.

@@ -39,6 +39,7 @@
 
 #include "exsim/client_ids.hpp"
 #include "exsim/journal.hpp"
+#include "exsim/mdfeed.hpp"
 #include "exsim/protocol.hpp"
 #include "exsim/seqstream.hpp"
 #include "exsim/sinks.hpp"
@@ -54,7 +55,13 @@ struct GatewayConfig {
   std::uint64_t batch = 1000;
   seqstream::Publisher* publisher = nullptr;
   bool wait_replica = false;
-  std::uint64_t replica_timeout_ms = 500;  // then the replica is declared lost and the primary runs alone
+  std::uint64_t replica_timeout_ms = 500;  // then the replica is declared lost
+  // What a replicate-wait primary does when its backup is lost. Halting (the default) keeps the guarantee that no
+  // acknowledged order is missing from the backup, at the cost of availability: a primary that was only paused or
+  // partitioned cannot then acknowledge orders its promoted successor lacks (split brain). Continuing trades that
+  // guarantee away for availability, and says so.
+  bool halt_on_replica_loss = true;
+  md_feed::Publisher* market_data = nullptr;  // public level-2 feed (mdfeed.hpp), published after each commit
   bool trust_client_ids = false;  // pass client ids to the engine unchanged (only to demonstrate the attack)
 };
 
@@ -76,6 +83,33 @@ inline void append_report(std::vector<std::byte>& out, const Event& e, std::uint
   wire::encode_report(e, client_seq, out.data() + at);
 }
 
+// Market data gathered during a batch and published only once the batch is committed.
+struct MdBatch {
+  struct Level {
+    std::uint32_t symbol;
+    Side side;
+    Price px;
+    auto operator<=>(const Level&) const = default;
+  };
+  std::vector<Level> levels;  // levels whose total may have changed
+  std::vector<Event> trades;
+  void note(const Event& e) {
+    switch (e.type) {
+      case EventType::Trade:
+        levels.push_back({e.symbol, opposite(e.side), e.price});  // the maker's level
+        trades.push_back(e);
+        break;
+      case EventType::Accepted:
+      case EventType::Canceled:
+      case EventType::Modified:
+        if (e.price != 0) levels.push_back({e.symbol, e.side, e.price});  // 0: a market order, never in the book
+        break;
+      default:
+        break;
+    }
+  }
+};
+
 // Receives the engine's events (exchange ids), digests them as they are, and writes each party's view.
 struct ReportSink {
   Conn& conn;
@@ -88,8 +122,10 @@ struct ReportSink {
   std::vector<OrderId>& mentioned;
   std::vector<int>& touched;
   bool translate;
+  MdBatch* md;
   void on_event(const Event& e) {
     digest.on_event(e);
+    if (md != nullptr) md->note(e);
     if (!translate) return append_report(conn.out, e, client_seq);
     Event r = e;
     r.order_id = e.order_id == exchange_id ? client_id : ids.to_client(e.order_id, conn.owner);
@@ -146,17 +182,30 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
   if (pub != nullptr) {
     ev.data.fd = pub->control_fd();
     epoll_ctl(ep, EPOLL_CTL_ADD, pub->control_fd(), &ev);
+    ev.data.fd = pub->group_fd();  // a newer epoch on the group means this primary has been replaced
+    epoll_ctl(ep, EPOLL_CTL_ADD, pub->group_fd(), &ev);
   }
-  std::printf("READY port=%u sync=%s replicate=%s\n", cfg.port, cfg.sync_mode.c_str(),
-              pub == nullptr ? "off" : cfg.wait_replica ? "wait" : "async");
+  std::printf("READY port=%u sync=%s replicate=%s epoch=%u\n", cfg.port, cfg.sync_mode.c_str(),
+              pub == nullptr ? "off" : cfg.wait_replica ? "wait" : "async", pub == nullptr ? 0u : pub->epoch());
   std::fflush(stdout);
 
   std::unordered_map<int, Conn> conns;
   std::unordered_map<OwnerId, int> owner_fd;
   ClientIdMap ids(first_exchange_id);
   std::vector<OrderId> mentioned;
+  md_feed::Publisher* md = cfg.market_data;
+  detail::MdBatch md_batch;
   std::uint64_t handled = 0, since_sync = 0, malformed = 0, waits = 0, wait_ns = 0;
   bool replica_lost = false;
+  const char* halted = nullptr;  // why this primary stopped acknowledging, if it did
+  auto fence_check = [&] {
+    if (pub != nullptr && pub->fenced() && halted == nullptr) {
+      halted = "FENCED";
+      std::printf("FENCED epoch=%u superseded by epoch=%u at seq=%llu: no further acknowledgements\n", pub->epoch(),
+                  pub->fenced_by(), static_cast<unsigned long long>(seq));
+      std::fflush(stdout);
+    }
+  };
   std::vector<std::byte> chunk(1 << 16);
 
   auto close_conn = [&](int fd) {
@@ -193,11 +242,19 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
     while (pub->acked() < through) {
       pub->service();
       if (pub->acked() >= through) break;
+      fence_check();
+      if (halted != nullptr) break;
       const std::uint64_t now = seqstream::now_ns();
       if (now - t0 > cfg.replica_timeout_ms * 1'000'000) {
-        replica_lost = true;
-        std::printf("REPLICA_LOST seq=%llu acked=%llu (continuing without replication)\n",
-                    static_cast<unsigned long long>(through), static_cast<unsigned long long>(pub->acked()));
+        if (cfg.halt_on_replica_loss) {
+          halted = "REPLICA_LOST";
+          std::printf("REPLICA_LOST seq=%llu acked=%llu: halting, no further acknowledgements\n",
+                      static_cast<unsigned long long>(through), static_cast<unsigned long long>(pub->acked()));
+        } else {
+          replica_lost = true;
+          std::printf("REPLICA_LOST seq=%llu acked=%llu (continuing without replication)\n",
+                      static_cast<unsigned long long>(through), static_cast<unsigned long long>(pub->acked()));
+        }
         std::fflush(stdout);
         break;
       }
@@ -233,10 +290,12 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
         }
         continue;
       }
-      if (pub != nullptr && fd == pub->control_fd()) {
+      if (pub != nullptr && (fd == pub->control_fd() || fd == pub->group_fd())) {
         pub->service();
+        fence_check();
         continue;
       }
+      if (halted != nullptr) continue;  // accept nothing more once fenced or halted
       auto it = conns.find(fd);
       if (it == conns.end()) continue;
       Conn& c = it->second;
@@ -275,7 +334,11 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
         if (pub != nullptr) pub->publish(cmd);
         journaled_any = true;
         mentioned.clear();
-        detail::ReportSink sink{c, client_seq, client_id, cmd.order_id, digest, ids, owner_fd, conns, mentioned, touched, !cfg.trust_client_ids};
+        if (md != nullptr && cmd.type == MsgType::Modify && cmd.symbol < engine.num_symbols())
+          if (const auto v = engine.book(cmd.symbol).find_order(cmd.order_id))  // the level it leaves changes too
+            md_batch.levels.push_back({cmd.symbol, v->side, v->price});
+        detail::ReportSink sink{c, client_seq, client_id, cmd.order_id, digest, ids, owner_fd, conns, mentioned, touched,
+                                !cfg.trust_client_ids, md != nullptr ? &md_batch : nullptr};
         gate.process(cmd, sink);
         // Orders that are no longer live release their client ids.
         mentioned.push_back(cmd.order_id);
@@ -298,10 +361,30 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
     if (journaled_any) {
       journal.flush();
       if (pub != nullptr) {
-        pub->flush();
-        if (cfg.wait_replica && !replica_lost) wait_for_replica(seq);
+        if (!pub->fenced()) pub->flush();
+        if (cfg.wait_replica && !replica_lost && halted == nullptr) wait_for_replica(seq);
       }
     }
+    if (halted != nullptr) {
+      // The batch's commands are journaled but not acknowledged by a backup: no response may leave. Clients see
+      // their connection close and must reconnect to whichever primary is current.
+      std::vector<int> fds;
+      for (const auto& [fd, c] : conns) fds.push_back(fd);
+      for (const int fd : fds) close_conn(fd);
+      break;
+    }
+    // The batch is committed: publish what it changed. Each touched level is published once, with its total after
+    // the batch (updates within a batch are conflated, as on a real feed).
+    if (md != nullptr && journaled_any) {
+      auto& lv = md_batch.levels;
+      std::sort(lv.begin(), lv.end());
+      lv.erase(std::unique(lv.begin(), lv.end()), lv.end());
+      for (const auto& e : md_batch.trades) md->trade(e.symbol, e.side, e.price, e.qty);
+      for (const auto& l : lv) md->level(l.symbol, l.side, l.px, engine.book(l.symbol).level_qty(l.side, l.px));
+      md->flush(engine);
+      lv.clear(), md_batch.trades.clear();
+    }
+    if (md != nullptr) md->heartbeat_if_idle(seqstream::now_ns());
     if (pub != nullptr) pub->heartbeat_if_idle(seqstream::now_ns());
     for (int fd : touched) {
       auto it = conns.find(fd);
@@ -320,15 +403,24 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
                 static_cast<unsigned long long>(s.retransmitted_packets), static_cast<unsigned long long>(s.unavailable),
                 static_cast<unsigned long long>(waits), waits ? static_cast<double>(wait_ns) / static_cast<double>(waits) / 1e3 : 0.0);
   }
+  if (md != nullptr) {
+    if (halted == nullptr) md->end(engine);
+    const auto& s = md->stats();
+    std::printf("MARKET_DATA packets=%llu fault_dropped=%llu snapshots=%llu level_updates=%llu trades=%llu l2=%016llx\n",
+                static_cast<unsigned long long>(s.packets), static_cast<unsigned long long>(s.dropped),
+                static_cast<unsigned long long>(s.snapshots), static_cast<unsigned long long>(s.levels),
+                static_cast<unsigned long long>(s.trades), static_cast<unsigned long long>(md_feed::engine_l2_digest(engine)));
+  }
   const double cpu_s = detail::cpu_seconds() - cpu_start;
-  std::printf("STOPPED handled=%llu malformed=%llu risk_rejects=%llu cpu_s=%.3f digest=%016llx seq=%llu\n",
+  std::printf("STOPPED handled=%llu malformed=%llu risk_rejects=%llu cpu_s=%.3f digest=%016llx seq=%llu reason=%s\n",
               static_cast<unsigned long long>(handled), static_cast<unsigned long long>(malformed),
               static_cast<unsigned long long>(gate.rejected()), cpu_s,
-              static_cast<unsigned long long>(digest.value()), static_cast<unsigned long long>(seq));
+              static_cast<unsigned long long>(digest.value()), static_cast<unsigned long long>(seq),
+              halted != nullptr ? halted : "signal");
   std::fflush(stdout);
   close(lfd);
   close(ep);
-  return 0;
+  return halted != nullptr ? 3 : 0;
 }
 
 }  // namespace exsim::tools

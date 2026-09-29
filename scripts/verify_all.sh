@@ -7,7 +7,8 @@
 # 2. real-data replay validates against the exchange's own snapshots, and fault injection is detected
 # 3. gateway end to end: TCP output identical to a local engine, kill -9 recovery, torn journal tail;
 #    two sessions (maker reports, anonymous counterparties) and hash flooding against exchange-assigned ids
-# 4. replication end to end: multicast with injected loss, gap repair, kill -9 failover to the hot backup
+# 4. replication end to end: multicast with injected loss, gap repair, kill -9 failover to the hot backup, fencing of a
+#    paused primary, double failover with log shipping; level-2 market data with loss, snapshot recovery, late joiner
 # 5. OCaml reference model: expect and property tests, and identical events to the C++ engine (if opam is present)
 # 6. WebAssembly engine smoke test, and the browser UI end to end (if node / a Chrome-family browser are present)
 # 7. accounting audit of the committed market-making results (if python + pandas are present)
@@ -27,8 +28,9 @@ step "3/7 gateway end to end"
 bash scripts/e2e_gateway.sh "$BUILD" | grep -E "IDENTICAL|OK|PASSED|FAIL"
 python3 scripts/e2e_sessions.py "$BUILD" | grep -E "OK|PASSED|FAIL|CPU time"
 
-step "4/7 replication end to end"
+step "4/7 replication and market data end to end"
 bash scripts/e2e_replication.sh "$BUILD" | grep -E "OK|PASSED|FAIL|throughput"
+bash scripts/e2e_marketdata.sh "$BUILD" | grep -E "OK|PASSED|FAIL"
 
 step "5/7 OCaml reference model"
 if command -v dune >/dev/null; then

@@ -142,6 +142,25 @@ class OrderBook {
     }
   }
 
+  // Visits the price levels of one side, best first: f(Price, total quantity). Market data uses it; the matching
+  // path never does.
+  template <class F>
+  void for_each_level(Side side, F&& f) const {
+    if (side == Side::Buy) {
+      for (std::int32_t i = best_bid_; i >= 0; i = bid_bits_.find_prev(i - 1)) f(min_price_ + i, level(i).qty);
+    } else {
+      for (std::int32_t i = best_ask_; i < n_; i = ask_bits_.find_next(i + 1)) f(min_price_ + i, level(i).qty);
+    }
+  }
+
+  // Total resting quantity at a price on one side (0 if none or out of band).
+  Qty level_qty(Side side, Price px) const noexcept {
+    const Price rel = px - min_price_;
+    if (rel < 0 || rel >= n_) return 0;
+    const auto i = static_cast<std::int32_t>(rel);
+    return (side == Side::Buy ? bid_bits_.test(i) : ask_bits_.test(i)) ? level(i).qty : 0;
+  }
+
   // Visits the queue at one price, front first: f(OrderId, Qty, Side). Out-of-band prices visit nothing.
   template <class F>
   void for_each_order_at(Price px, F&& f) const {

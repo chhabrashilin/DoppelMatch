@@ -57,6 +57,10 @@ jobs:
         if: matrix.name == 'gcc release' || matrix.name == 'asan + ubsan'
         run: bash scripts/e2e_replication.sh build
 
+      - name: market data end to end (level-2 feed, gap recovery by snapshot, late joiner)
+        if: matrix.name == 'gcc release' || matrix.name == 'asan + ubsan'
+        run: bash scripts/e2e_marketdata.sh build
+
   ocaml:
     name: OCaml reference model and cross-language agreement
     runs-on: ubuntu-24.04
@@ -72,6 +76,43 @@ jobs:
       - run: cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_BUILD_TYPE=Release -DEXSIM_NATIVE=OFF && cmake --build build --target exsim_difffeed
       - name: the C++ engine and the OCaml model emit identical events on 5M random commands
         run: opam exec -- bash scripts/ocaml_diff.sh build 20 250000
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - name: and on real data (the engine's exact input for 5 minutes of Coinbase BTC-USD)
+        run: |
+          pip install orjson && cmake --build build --target exsim_l3replay
+          python scripts/fetch_coinbase_l3.py --date 2026-09-01 --minutes 5 --out l3raw && python scripts/l3conv.py l3raw sample.exl3
+          opam exec -- bash scripts/ocaml_real.sh build sample.exl3
+
+  coverage:
+    name: code coverage (every test suite)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18 llvm-18
+      - name: line and branch coverage of include/exsim and the gateway
+        run: LLVM_SUFFIX=-18 bash scripts/coverage.sh build
+
+  fuzzing:
+    name: fuzzing (libFuzzer with ASan and UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang-18 libclang-rt-18-dev
+      - run: |
+          cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DEXSIM_FUZZ=ON -DEXSIM_NATIVE=OFF
+          cmake --build build --target fuzz_book fuzz_wire fuzz_journal
+      - name: wire decoder, journal recovery and engine-vs-reference, 60 s each
+        run: |
+          mkdir -p crashes
+          for t in wire journal book; do
+            mkdir -p corpus/$t
+            ./build/fuzz_$t -max_total_time=60 -print_final_stats=1 -artifact_prefix=crashes/ corpus/$t 2>&1 | grep -E "stat::number_of_executed_units|ERROR|fuzz_" || true
+            test -z "$(ls crashes)"
+          done
+      - if: failure()
+        uses: actions/upload-artifact@v6
+        with: { name: fuzz-crashes, path: crashes/ }
 
   coinbase:
     name: engine reproduces real Coinbase matching

@@ -23,6 +23,7 @@
 //
 //   exsim_l3replay --in 2026-09-01.exl3 [--check-every 100000] [--examples 10] [--max-records N]
 //                  [--no-stp] [--show-stp] [--drop-cancels N (fault injection)] [--trace]
+//                  [--emit-commands cmds.txt (the engine's exact input, for the OCaml model)]
 
 #include <algorithm>
 #include <chrono>
@@ -305,7 +306,35 @@ class Replay {
     cfg.stp = stp_ ? Stp::CancelResting : Stp::None;
     min_px_ = cfg.min_price;
     engine_ = std::make_unique<OrderBook<AosStore>>(0, cfg);
+    // A CONFIG line starts (or, after a resynchronization, restarts) the book in the emitted stream.
+    if (emit_)
+      std::fprintf(emit_, "CONFIG %" PRId64 " %u %u %u\n", cfg.min_price, cfg.num_levels, cfg.max_orders,
+                   static_cast<unsigned>(cfg.stp));
   }
+
+  // Every command the engine receives goes through these, so --emit-commands can record the exact input stream in
+  // the canonical text format (tools/exsim_difffeed.cpp, ocaml/): a second implementation can then be run on
+  // exactly what this engine saw on a real day.
+  void emit(const Command& c) {
+    if (!emit_) return;
+    switch (c.type) {
+      case MsgType::NewOrder:
+        std::fprintf(emit_, "N %" PRIu64 " %u %" PRId64 " %" PRIu64 " %u %u %u %u\n", c.order_id,
+                     static_cast<unsigned>(c.side), c.price, c.qty, static_cast<unsigned>(c.ord_type),
+                     static_cast<unsigned>(c.tif), static_cast<unsigned>(c.flags), static_cast<unsigned>(c.owner));
+        break;
+      case MsgType::Cancel: std::fprintf(emit_, "X %" PRIu64 "\n", c.order_id); break;
+      case MsgType::Modify: std::fprintf(emit_, "U %" PRIu64 " %" PRId64 " %" PRIu64 "\n", c.order_id, c.price, c.qty); break;
+    }
+  }
+  void eng_add(const Command& c, Sink& s) { emit(c), engine_->add(c, s); }
+  void eng_cancel(const Command& c, Sink& s) { emit(c), engine_->cancel(c, s); }
+  void eng_modify(const Command& c, Sink& s) { emit(c), engine_->modify(c, s); }
+
+ public:
+  std::FILE* emit_ = nullptr;
+
+ private:
   bool in_band(Price px) const { return px >= min_px_ && px < min_px_ + static_cast<Price>(kLevels); }
 
   void rebuild_from_truth() {
@@ -316,14 +345,14 @@ class Replay {
     for (OrderId id : live) {
       Command c{};
       c.type = MsgType::Cancel, c.order_id = id;
-      engine_->cancel(c, sink);
+      eng_cancel(c, sink);
     }
     for (Side s : {Side::Buy, Side::Sell}) {
       truth_.for_each(s, [&](Price px, const l3::TruthBook::Order& o) {
         if (o.qty == 0 || !in_band(px)) return;
         Command c{};
         c.type = MsgType::NewOrder, c.order_id = o.id, c.side = s, c.price = px, c.qty = o.qty, c.owner = accounts_.owner(o.id);
-        engine_->add(c, sink);
+        eng_add(c, sink);
       });
     }
   }
@@ -339,7 +368,7 @@ class Replay {
       for (OrderId id : ids) {
         Command c{};
         c.type = MsgType::Cancel, c.order_id = id;
-        engine_->cancel(c, sink);
+        eng_cancel(c, sink);
       }
     }
     for (Price px : prices) {
@@ -352,11 +381,11 @@ class Replay {
           if (engine_->contains(o.id)) {  // it rests at another price in the engine: move it
             Command c{};
             c.type = MsgType::Cancel, c.order_id = o.id;
-            engine_->cancel(c, sink);
+            eng_cancel(c, sink);
           }
           Command c{};
           c.type = MsgType::NewOrder, c.order_id = o.id, c.side = s, c.price = px, c.qty = o.qty, c.owner = accounts_.owner(o.id);
-          engine_->add(c, sink);
+          eng_add(c, sink);
         }
       }
     }
@@ -595,7 +624,7 @@ class Replay {
             Command c{};
             c.type = MsgType::Cancel, c.order_id = r.id;
             Sink sink;
-            engine_->cancel(c, sink);
+            eng_cancel(c, sink);
           }
         }
         truth_.remove(r.id);
@@ -608,7 +637,7 @@ class Replay {
             Command c{};
             c.type = MsgType::Cancel, c.order_id = r.id;
             Sink sink;
-            engine_->cancel(c, sink);
+            eng_cancel(c, sink);
           }
         }
         break;
@@ -682,7 +711,7 @@ class Replay {
       return;
     }
     Sink sink;
-    engine_->add(c, sink);
+    eng_add(c, sink);
     open_episode(r.id, std::move(sink.ev), true);
     ep_seq_ = r.seq;
     ep_taker_px_ = c.ord_type == OrdType::Limit ? c.price : 0;
@@ -702,7 +731,7 @@ class Replay {
       Command c{};
       c.type = MsgType::Modify, c.order_id = r.id, c.price = new_px, c.qty = r.q;
       Sink sink;
-      engine_->modify(c, sink);
+      eng_modify(c, sink);
       return;
     }
     ++st_.modifies;
@@ -730,17 +759,17 @@ class Replay {
       ++st_.modify_out_of_band;
       Command k{};
       k.type = MsgType::Cancel, k.order_id = id;
-      engine_->cancel(k, sink);
+      eng_cancel(k, sink);
       sink.ev.clear();
     } else if (!engine_->contains(id)) {  // moved into the band: a price change goes to the back anyway
       Command c{};
       c.type = MsgType::NewOrder, c.order_id = id, c.side = side, c.price = new_px, c.qty = remainder + filled,
       c.owner = accounts_.owner(id);
-      engine_->add(c, sink);
+      eng_add(c, sink);
     } else {
       Command c{};
       c.type = MsgType::Modify, c.order_id = id, c.price = new_px, c.qty = remainder + filled;
-      engine_->modify(c, sink);
+      eng_modify(c, sink);
     }
     open_episode(id, std::move(sink.ev), true);
     ep_actual_ = std::move(fills);
@@ -748,7 +777,7 @@ class Replay {
       Command k{};
       k.type = MsgType::Cancel, k.order_id = id;
       Sink ks;
-      engine_->cancel(k, ks);
+      eng_cancel(k, ks);
     }
     ep_seq_ = seq;
     ep_taker_px_ = new_px;
@@ -853,7 +882,12 @@ int main(int argc, char** argv) {
   rp.show_stp_ = args.has("show-stp");
   rp.drop_cancel_every_ = args.u64("drop-cancels", 0);
   rp.trace_ = args.has("trace");
+  if (args.has("emit-commands")) {
+    rp.emit_ = std::fopen(args.str("emit-commands", "").c_str(), "w");
+    if (rp.emit_ == nullptr) tools::Args::die("cannot write --emit-commands file");
+  }
   rp.run(rd, max_records);
   rp.report();
+  if (rp.emit_) std::fclose(rp.emit_);
   return rp.ok() ? 0 : 1;
 }

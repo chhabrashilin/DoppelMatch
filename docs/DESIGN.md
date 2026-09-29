@@ -151,30 +151,66 @@ The engine is a deterministic state machine, so replicating it means replicating
   `--replicate-wait`) wait, then acknowledge. The failover test caught an earlier version that sent a datagram as soon
   as 25 commands accumulated, before the batch's journal flush: after `kill -9`, the backup held commands the dead
   primary's journal had lost. No acknowledged order was affected, but the backup's journal was no longer a prefix of
-  the primary's, so the publisher now only stages commands until the journal is flushed. Each datagram names the sequence number of its first command. When idle, the
+  the primary's, so the publisher now only stages commands until the journal is flushed. Each datagram names the
+  sequence number of its first command. When idle, the
   primary sends heartbeats carrying the next sequence number; without them a receiver cannot tell silence from a lost
   final datagram.
 - **Recovery.** A replica that sees a jump stashes what arrived early and asks the primary's retransmitter (a unicast
   control socket serving from an in-memory ring of the last 2^20 commands) for exactly the missing range, re-asking
   after 20 ms without progress. Duplicates are ignored, so a retransmission racing the original is harmless. A request
-  older than the ring gets an explicit `Unavailable`, never silence.
+  older than the ring gets an explicit `Unavailable`, never silence; that replica catches up from a copy of a journal
+  instead (`--from-journal`, log shipping: the journal *is* the state, since the engine is deterministic), then joins
+  the live stream at the next sequence number.
 - **Acknowledgement.** A replica acknowledges the highest sequence number it has applied and flushed to its own journal,
   and re-acknowledges every 5 ms because acks are datagrams too. With `--replicate-wait`, the primary releases a batch's
   client acknowledgements only once a replica has acknowledged the whole batch. This is what makes failover safe: the
-  backup holds every command any client has seen acknowledged. If the replica stops acknowledging for 500 ms it is
-  declared lost and the primary continues alone, and says so (availability over durability, explicitly).
+  backup holds every command any client has seen acknowledged.
 - **Failover.** A standby replica that hears nothing (no data, no heartbeat) for 300 ms promotes itself: it opens the
   gateway on its own port with its engine, journal and sequence number as they are. Nothing is replayed. Commands the
-  primary sequenced but never delivered die with it; none of them was acknowledged.
-- **Tested** (`scripts/e2e_replication.sh`): replica digest equals primary digest after 500k orders; the same with 2% of
-  datagrams deliberately dropped (hundreds of gaps detected and repaired); and a `kill -9` of the primary under load,
-  after which the backup serves orders within about 0.4 s, holds at least every acknowledged command, holds a journal
-  that is an exact prefix of the dead primary's, takes new orders, and ends in a state whose digest equals an offline
-  replay of its journal.
+  primary sequenced but never delivered die with it; none of them was acknowledged. With `--promote-control-port` the
+  new primary also replicates, under the next epoch, seeding its retransmission ring from its own journal, so a new
+  backup can follow it and the system survives a second failure.
+- **Epochs and fencing: the split-brain problem.** A primary that is paused (a long GC pause, a VM migration) or cut
+  off, rather than dead, looks dead to its backup, which promotes itself. When the old primary resumes it must not
+  acknowledge anything, or two primaries would accept orders the other lacks. Two independent defences:
+  1. *Epochs.* Every primary carries an epoch, and a promoted backup takes the next one. Replicas ignore older epochs.
+     A primary also listens to its own group; hearing a newer epoch means it has been replaced, and it fences itself:
+     no more acknowledgements, client sessions closed.
+  2. *Halt on replica loss.* A `--replicate-wait` primary whose backup stops acknowledging halts rather than carrying
+     on alone (the default; `--continue-without-replica` chooses availability instead, and says so). This holds even
+     when the new primary is silent, so the old one never hears epoch 2.
+  A replica that hears a newer epoch than the one it follows stops rather than following it, since it may hold
+  commands the new primary never sequenced; a fresh replica catches up from the new primary instead.
+- **Tested** (`scripts/e2e_replication.sh`):
+  - replica digest equals primary digest after 500k orders, also with 2% of datagrams dropped (hundreds of gaps);
+  - `kill -9` of the primary under load: the backup serves orders in about 0.4 s, holds every acknowledged command and
+    a journal that is an exact prefix of the dead primary's, and ends with a digest equal to a replay of its journal;
+  - a partition, simulated with `SIGSTOP`/`SIGCONT`, in both modes: the resumed primary fences itself (hearing epoch 2)
+    or halts (losing its backup), and every command it acknowledged is in the new primary;
+  - two failovers in a row: the first backup promotes and replicates under epoch 2; a fresh backup is refused by its
+    small ring and one started from a shipped journal catches up; the second failure promotes it to epoch 3, holding
+    every acknowledged order of both clients.
 
-What this does not do: one host, loopback multicast, one backup, no snapshot for a replica that falls behind the ring,
-no re-replication after a promotion, and no fencing (a primary that was only partitioned, not dead, would not know it had
-been replaced). Section 11 lists these.
+What this still does not do: it runs on one host with loopback multicast; failure detection is a timeout, with no
+external arbiter or leases, so a primary that is paused for less than the timeout and a backup that is slow to notice
+are resolved by the halt rule rather than by consensus; there is one backup at a time. Section 11 lists these.
+
+### Market data
+
+The public feed (`mdfeed.hpp`, `exsim_mdlisten`) is level 2: after each committed batch, the new total quantity of
+every price level the batch touched (0 removes it) and every trade, in sequenced multicast packets. Its recovery is
+deliberately different from replication's. A replica must never miss a command, so it asks for retransmission;
+market data has many consumers and none is served individually, so the feed publishes a full snapshot every N
+packets, tagged with the last incremental it reflects. A subscriber that sees a gap discards its book, buffers what
+arrives, rebuilds from the next snapshot and replays the buffered incrementals newer than it; a late joiner does the
+same. This is the model of real venue feeds (CME's MDP 3.0 is the best-known example). Updates are published only
+after the batch is committed, so the feed never shows state a failover could roll back.
+
+Tested by `scripts/e2e_marketdata.sh`: lossless, with 2% of incremental packets dropped (177 gaps, each recovered from
+a snapshot), and with a subscriber that joins halfway; each time the book the subscriber rebuilt has the same level-2
+digest as the engine's. The lossy run also shows the model's cost: with a snapshot every 200 packets and 2% loss, the
+subscriber spent most of the run waiting for a snapshot, which is why real feeds add a retransmission service for
+small gaps. That, an order-by-order (level 3) feed, and conflation controls are not built.
 
 ## 8. Does the engine match like a real exchange?
 
@@ -252,11 +288,14 @@ journaled `ts`, so a replay makes every accept/reject decision identically (test
 
 ## 11. Limits and next steps
 
-- **No bare-metal numbers.** WSL2 hides the PMU and the hypervisor injects jitter. Next: `isolcpus`/`nohz_full`,
-  `perf stat` hardware counters, and the same grid on real silicon.
-- **Replication is one host, one backup.** Loopback multicast has no real loss (it is injected), no switch and no NIC.
-  Missing: snapshots for a replica that falls behind the retransmission ring, re-replication after promotion, and
-  fencing against a primary that is partitioned rather than dead (a real deployment needs an arbiter or leases).
+- **No bare-metal numbers.** WSL2 hides the PMU and the hypervisor injects jitter. `scripts/bench_baremetal.sh` runs the
+  suite with `perf stat` counters and records the machine's configuration; the missing piece is a machine to run it on.
+- **Replication is one host, one backup at a time, and not consensus.** Loopback multicast has no real loss (it is
+  injected), no switch and no NIC. Failure detection is a timeout with no arbiter or leases; safety under a partition
+  comes from epoch fencing and the halt rule, which give up availability rather than accept a split brain. A production
+  system would put the sequenced log behind consensus (Raft, or a dedicated arbiter) and run more than one backup.
+- **Market data recovers by snapshot only.** At 2% loss the subscriber spends much of its time waiting for the next
+  snapshot; a real feed adds a retransmission (TCP replay) service for small gaps, and a separate snapshot channel.
 - **One matching thread per shard.** Symbols are independent, so sharding is straightforward, but no router exists.
 - **Level 3 validation is Coinbase only**, one product, days spread over a year. Hidden inputs (time in force, accounts)
   are inferred, and the inference is reported rather than assumed.

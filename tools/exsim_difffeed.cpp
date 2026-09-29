@@ -5,7 +5,8 @@
 // outputs for the same command stream can be compared with `cmp`. scripts/ocaml_diff.sh runs the loop.
 //
 //   exsim_difffeed --gen 1000000 --seed 7 --out cmds.txt     write a random stream (first line CONFIG)
-//   exsim_difffeed --in cmds.txt [--book aos|soa|hybrid|ref] print the events, one per line
+//   exsim_difffeed --in cmds.txt [--book aos|soa|hybrid|ref] print the events, one per line (streamed; a
+//                                                           CONFIG line anywhere starts a fresh book)
 //
 // Commands: "N id side price qty ord_type tif flags owner", "X id", "U id price qty".
 // Events:   "A id side price qty", "R id side request reason", "T taker maker side price qty leaves",
@@ -18,8 +19,10 @@
 #include <cinttypes>
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "args.hpp"
@@ -125,18 +128,40 @@ struct TextSink {
   }
 };
 
+bool parse_config(const std::string& line, BookConfig& cfg) {
+  std::istringstream h(line);
+  std::string tag;
+  unsigned stp = 0;
+  h >> tag >> cfg.min_price >> cfg.num_levels >> cfg.max_orders >> stp;
+  cfg.stp = static_cast<Stp>(stp);
+  return tag == "CONFIG" && !h.fail();
+}
+
+// Streams the file: a CONFIG line starts a fresh book (the first line, and again wherever the producer rebuilt its
+// book, as exsim_l3replay does after a gap in the exchange feed). Returns {commands, events}.
 template <class Book>
-std::uint64_t replay(const BookConfig& cfg, const std::vector<Command>& cmds) {
-  Book book(0, cfg);
+std::pair<std::uint64_t, std::uint64_t> replay(std::istream& in) {
+  std::unique_ptr<Book> book;
   TextSink sink{stdout};
-  for (const Command& c : cmds) {
+  std::uint64_t n = 0;
+  std::string line;
+  Command c;
+  BookConfig cfg;
+  while (std::getline(in, line)) {
+    if (parse_config(line, cfg)) {
+      book = std::make_unique<Book>(0, cfg);
+      continue;
+    }
+    if (!parse_command(line, c)) continue;
+    if (!book) tools::Args::die("a command before the first CONFIG line");
+    ++n;
     switch (c.type) {
-      case MsgType::NewOrder: book.add(c, sink); break;
-      case MsgType::Cancel: book.cancel(c, sink); break;
-      case MsgType::Modify: book.modify(c, sink); break;
+      case MsgType::NewOrder: book->add(c, sink); break;
+      case MsgType::Cancel: book->cancel(c, sink); break;
+      case MsgType::Modify: book->modify(c, sink); break;
     }
   }
-  return sink.n;
+  return {n, sink.n};
 }
 
 }  // namespace
@@ -163,34 +188,18 @@ int main(int argc, char** argv) {
   if (!args.has("in")) tools::Args::die("--gen N or --in <file> is required");
   std::ifstream in(args.str("in", ""));
   if (!in) tools::Args::die("cannot open --in");
-  std::string line;
-  BookConfig cfg;
-  {
-    std::getline(in, line);
-    std::istringstream h(line);
-    std::string tag;
-    unsigned stp = 0;
-    h >> tag >> cfg.min_price >> cfg.num_levels >> cfg.max_orders >> stp;
-    if (tag != "CONFIG" || h.fail()) tools::Args::die("first line must be: CONFIG min_price num_levels max_orders stp");
-    cfg.stp = static_cast<Stp>(stp);
-  }
-  std::vector<Command> cmds;
-  Command c;
-  while (std::getline(in, line))
-    if (parse_command(line, c)) cmds.push_back(c);
-
   const std::string book = args.str("book", "hybrid");
-  std::uint64_t events = 0;
+  std::pair<std::uint64_t, std::uint64_t> r;
   if (book == "aos")
-    events = replay<AosBook>(cfg, cmds);
+    r = replay<AosBook>(in);
   else if (book == "soa")
-    events = replay<SoaBook>(cfg, cmds);
+    r = replay<SoaBook>(in);
   else if (book == "hybrid")
-    events = replay<HybridBook>(cfg, cmds);
+    r = replay<HybridBook>(in);
   else if (book == "ref")
-    events = replay<ReferenceBook>(cfg, cmds);
+    r = replay<ReferenceBook>(in);
   else
     tools::Args::die("--book must be aos, soa, hybrid or ref");
-  std::fprintf(stderr, "%zu commands, %" PRIu64 " events\n", cmds.size(), events);
+  std::fprintf(stderr, "%" PRIu64 " commands, %" PRIu64 " events\n", r.first, r.second);
   return 0;
 }

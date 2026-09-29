@@ -13,11 +13,18 @@
 //   * When idle, the primary sends heartbeats carrying the next sequence number. Without them a receiver
 //     cannot distinguish "no traffic" from "the last datagram was lost" (tail loss).
 //   * The retransmitter serves from an in-memory ring of recent commands. A receiver that falls further
-//     behind than the ring gets an explicit Unavailable reply rather than silence; it would then need a
-//     snapshot, which this code does not implement (see docs/DESIGN.md).
+//     behind than the ring gets an explicit Unavailable reply rather than silence, and must first catch up from a
+//     copy of a journal (log shipping: exsim_replica --from-journal), then join the live stream.
 //   * Replicas acknowledge the highest sequence number they have applied AND flushed to their own
 //     journal. With --replicate-wait the primary releases a client's acknowledgement only once some
 //     replica has acknowledged that command, so a promoted backup never lacks an acknowledged order.
+//
+// Epochs and fencing. Every primary has an epoch; a backup that promotes itself takes the old epoch plus one.
+//   * Replicas lock on to the epoch they first hear and ignore older ones, so a stale primary cannot feed them.
+//   * A primary also listens to its own group. If it hears a newer epoch, it has been replaced (it was paused or
+//     partitioned, not dead) and fences itself: the gateway stops acknowledging and closes client sessions.
+//   * Independently, a primary that runs with --replicate-wait and loses its backup halts rather than carrying on
+//     alone, so even a primary that never hears the new epoch cannot acknowledge an order its successor lacks.
 //
 // Wire format: a 24-byte Header, then `count` raw 56-byte Commands for Data. Both ends run on one host
 // (little endian, same struct layout), as a real deployment's engine replicas would; a cross-platform
@@ -30,6 +37,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -56,7 +64,7 @@ enum class Kind : std::uint8_t {
 
 struct Header {
   std::uint32_t magic;
-  std::uint32_t session;
+  std::uint32_t epoch;  // the sending primary's epoch (on replica -> primary messages: the epoch followed)
   std::uint64_t first_seq;
   std::uint16_t count;
   Kind kind;
@@ -101,9 +109,22 @@ inline int udp_socket(std::uint16_t bind_port, bool reuse) {
   return fd;
 }
 
-inline Header header(Kind k, std::uint32_t session, std::uint64_t first_seq, std::uint16_t count) {
+// A socket that receives the group's multicast (on loopback).
+inline int group_socket(const sockaddr_in& g) {
+  const int fd = udp_socket(ntohs(g.sin_port), true);
+  ip_mreq m{};
+  m.imr_multiaddr = g.sin_addr;
+  m.imr_interface.s_addr = htonl(INADDR_LOOPBACK);
+  if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &m, sizeof m) != 0) {
+    ::close(fd);
+    throw std::runtime_error("multicast join failed");
+  }
+  return fd;
+}
+
+inline Header header(Kind k, std::uint32_t epoch, std::uint64_t first_seq, std::uint16_t count) {
   Header h{};
-  h.magic = kMagic, h.session = session, h.first_seq = first_seq, h.count = count, h.kind = k;
+  h.magic = kMagic, h.epoch = epoch, h.first_seq = first_seq, h.count = count, h.kind = k;
   return h;
 }
 
@@ -118,32 +139,48 @@ class Publisher {
   };
 
   // `drop` is fault injection: the probability that an original multicast datagram is silently not sent
-  // (it stays in the ring, so it can be retransmitted). Deterministic for a given seed.
+  // (it stays in the ring, so it can be retransmitted). Deterministic for a given seed. `next_seq` is the first
+  // sequence number this primary will assign; earlier ones can be loaded with seed_history() so that replicas can
+  // still catch up on them.
   Publisher(const std::string& group, std::uint16_t control_port, std::uint32_t ring_log2, double drop,
-            std::uint64_t seed, std::uint64_t next_seq)
+            std::uint64_t seed, std::uint64_t next_seq, std::uint32_t epoch = 1)
       : group_(parse_endpoint(group)),
         fd_(udp_socket(control_port, false)),
+        gfd_(group_socket(group_)),
         ring_(std::size_t{1} << ring_log2),
         mask_((std::uint64_t{1} << ring_log2) - 1),
         drop_(drop),
         rng_(seed),
+        epoch_(epoch),
         next_seq_(next_seq),
         pending_first_(next_seq),
-        acked_(next_seq - 1) {
-    session_ = static_cast<std::uint32_t>(now_ns() >> 10) | 1u;
+        acked_(next_seq - 1),
+        history_from_(next_seq) {
     in_addr loop{};
     loop.s_addr = htonl(INADDR_LOOPBACK);
     int on = 1;
     setsockopt(fd_, IPPROTO_IP, IP_MULTICAST_IF, &loop, sizeof loop);
     setsockopt(fd_, IPPROTO_IP, IP_MULTICAST_LOOP, &on, sizeof on);
   }
-  ~Publisher() { ::close(fd_); }
+  ~Publisher() { ::close(fd_), ::close(gfd_); }
   Publisher(const Publisher&) = delete;
   Publisher& operator=(const Publisher&) = delete;
 
   int control_fd() const { return fd_; }
+  int group_fd() const { return gfd_; }
   std::uint64_t acked() const { return acked_; }
+  std::uint32_t epoch() const { return epoch_; }
+  bool fenced() const { return fenced_by_ != 0; }
+  std::uint32_t fenced_by() const { return fenced_by_; }
   const Stats& stats() const { return stats_; }
+
+  // Loads an already-sequenced command (seq < next_seq) into the retransmission ring, e.g. a promoted backup's
+  // own journal, so that a replica joining the new primary can catch up from the beginning.
+  void seed_history(const Command& c) {
+    if (c.seq >= next_seq_) throw std::logic_error("Publisher: seed_history beyond next_seq");
+    ring_[c.seq & mask_] = c;
+    history_from_ = std::min(history_from_, c.seq);
+  }
 
   // Stages a command; nothing is sent until flush(). Commands must arrive in sequence order with no holes (the
   // sequencer's job).
@@ -170,21 +207,31 @@ class Publisher {
   }
 
   void heartbeat_if_idle(std::uint64_t now, std::uint64_t interval_ns = 20'000'000) {
-    if (now - last_send_ns_ < interval_ns) return;
+    if (now - last_send_ns_ < interval_ns || fenced()) return;
     flush();
-    send_control(header(Kind::Heartbeat, session_, next_seq_, 0), group_);
+    send_control(header(Kind::Heartbeat, epoch_, next_seq_, 0), group_);
     ++stats_.heartbeats;
     last_send_ns_ = now;
   }
 
   void end() {
+    if (fenced()) return;
     flush();
-    for (int i = 0; i < 3; ++i) send_control(header(Kind::End, session_, next_seq_, 0), group_);
+    for (int i = 0; i < 3; ++i) send_control(header(Kind::End, epoch_, next_seq_, 0), group_);
   }
 
-  // Drains the control socket: retransmission requests and acknowledgements. Never blocks.
+  // Drains the control socket (retransmission requests, acknowledgements) and the group (a newer epoch means this
+  // primary has been replaced). Never blocks.
   void service() {
     alignas(8) std::byte buf[kMaxDatagram];
+    for (;;) {
+      const ssize_t n = ::recv(gfd_, buf, sizeof buf, MSG_DONTWAIT);
+      if (n < 0) break;
+      if (n < static_cast<ssize_t>(sizeof(Header))) continue;
+      Header h;
+      std::memcpy(&h, buf, sizeof h);
+      if (h.magic == kMagic && h.epoch > epoch_ && h.epoch > fenced_by_) fenced_by_ = h.epoch;
+    }
     for (;;) {
       sockaddr_in from{};
       socklen_t len = sizeof from;
@@ -195,15 +242,16 @@ class Publisher {
       }
       Header h;
       std::memcpy(&h, buf, sizeof h);
-      if (h.magic != kMagic || h.session != session_) continue;
+      if (h.magic != kMagic || h.epoch != epoch_ || fenced()) continue;
       if (h.kind == Kind::Ack) {
         ++stats_.acks;
         if (h.first_seq > acked_ && h.first_seq < next_seq_) acked_ = h.first_seq;
       } else if (h.kind == Kind::Retransmit) {
         ++stats_.retransmit_requests;
-        const std::uint64_t oldest = next_seq_ > ring_.size() ? next_seq_ - ring_.size() : 1;
+        const std::uint64_t in_ring = next_seq_ > ring_.size() ? next_seq_ - ring_.size() : 1;
+        const std::uint64_t oldest = std::max(in_ring, history_from_);
         if (h.first_seq < oldest) {
-          send_control(header(Kind::Unavailable, session_, oldest, 0), from);
+          send_control(header(Kind::Unavailable, epoch_, oldest, 0), from);
           ++stats_.unavailable;
           continue;
         }
@@ -219,7 +267,7 @@ class Publisher {
  private:
   void send_data(std::uint64_t first, std::uint16_t n, const sockaddr_in& to) {
     alignas(8) std::byte buf[kMaxDatagram];
-    const Header h = header(Kind::Data, session_, first, n);
+    const Header h = header(Kind::Data, epoch_, first, n);
     std::memcpy(buf, &h, sizeof h);
     for (std::uint16_t i = 0; i < n; ++i)
       std::memcpy(buf + sizeof h + i * sizeof(Command), &ring_[(first + i) & mask_], sizeof(Command));
@@ -230,13 +278,13 @@ class Publisher {
   }
 
   sockaddr_in group_;
-  int fd_;
+  int fd_, gfd_;
   std::vector<Command> ring_;
   std::uint64_t mask_;
   double drop_;
   Rng rng_;
-  std::uint32_t session_ = 0;
-  std::uint64_t next_seq_, pending_first_, acked_;
+  std::uint32_t epoch_, fenced_by_ = 0;
+  std::uint64_t next_seq_, pending_first_, acked_, history_from_;
   std::uint64_t last_send_ns_ = 0;
   Stats stats_;
 };
@@ -247,17 +295,15 @@ class Publisher {
 class Subscriber {
  public:
   struct Stats {
-    std::uint64_t packets = 0, duplicates = 0, gaps = 0, requests = 0, stashed_max = 0;
+    std::uint64_t packets = 0, duplicates = 0, gaps = 0, requests = 0, stashed_max = 0, stale = 0;
   };
 
-  Subscriber(const std::string& group, const std::string& primary_control, std::uint64_t first_seq = 1)
-      : primary_(parse_endpoint(primary_control)), expected_(first_seq) {
-    const sockaddr_in g = parse_endpoint(group);
-    mfd_ = udp_socket(ntohs(g.sin_port), true);
-    ip_mreq m{};
-    m.imr_multiaddr = g.sin_addr;
-    m.imr_interface.s_addr = htonl(INADDR_LOOPBACK);
-    if (setsockopt(mfd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &m, sizeof m) != 0) throw std::runtime_error("join failed");
+  // `first_seq` is the next command this replica needs (above 1 after catching up from a journal); `min_epoch`
+  // is the oldest primary epoch it will follow.
+  Subscriber(const std::string& group, const std::string& primary_control, std::uint64_t first_seq = 1,
+             std::uint32_t min_epoch = 1)
+      : primary_(parse_endpoint(primary_control)), min_epoch_(min_epoch), expected_(first_seq) {
+    mfd_ = group_socket(parse_endpoint(group));
     cfd_ = udp_socket(0, false);
   }
   ~Subscriber() { ::close(mfd_), ::close(cfd_); }
@@ -266,9 +312,14 @@ class Subscriber {
 
   std::uint64_t expected() const { return expected_; }  // next seq to deliver
   bool ended() const { return ended_ && expected_ >= end_seq_; }
-  bool heard() const { return session_ != 0; }
+  bool heard() const { return epoch_ != 0; }
+  std::uint32_t epoch() const { return epoch_; }
   std::uint64_t last_heard_ns() const { return last_heard_; }
   bool unavailable() const { return unavailable_; }
+  // A newer primary has appeared. This replica may hold commands the new primary never sequenced, so it must not
+  // follow it: it stops, and a fresh replica catches up from the new primary instead.
+  bool superseded() const { return superseded_by_ != 0; }
+  std::uint32_t superseded_by() const { return superseded_by_; }
   const Stats& stats() const { return stats_; }
 
   // Waits up to timeout_ms for traffic, then calls on_command(const Command&) for every command that is now
@@ -284,8 +335,8 @@ class Subscriber {
   }
 
   void ack(std::uint64_t through) {
-    if (session_ == 0) return;
-    const Header h = header(Kind::Ack, session_, through, 0);
+    if (epoch_ == 0) return;
+    const Header h = header(Kind::Ack, epoch_, through, 0);
     ::sendto(cfd_, &h, sizeof h, 0, reinterpret_cast<const sockaddr*>(&primary_), sizeof primary_);
   }
 
@@ -300,9 +351,16 @@ class Subscriber {
       if (n < static_cast<ssize_t>(sizeof(Header))) continue;
       Header h;
       std::memcpy(&h, buf, sizeof h);
-      if (h.magic != kMagic) continue;
-      if (session_ == 0) session_ = h.session;  // lock on to the first primary heard
-      if (h.session != session_) continue;
+      if (h.magic != kMagic || h.kind == Kind::Ack || h.kind == Kind::Retransmit) continue;
+      if (h.epoch < min_epoch_ || (epoch_ != 0 && h.epoch < epoch_)) {  // a stale primary
+        ++stats_.stale;
+        continue;
+      }
+      if (epoch_ == 0) epoch_ = h.epoch;  // lock on to the first primary heard
+      if (h.epoch > epoch_) {
+        superseded_by_ = std::max(superseded_by_, h.epoch);
+        continue;
+      }
       last_heard_ = now_ns();
       switch (h.kind) {
         case Kind::Data: {
@@ -356,11 +414,11 @@ class Subscriber {
   void request_gap() {
     std::uint64_t gap_end = known_next_;
     if (!stash_.empty()) gap_end = stash_.begin()->first;
-    if (gap_end <= expected_ || session_ == 0) return;
+    if (gap_end <= expected_ || epoch_ == 0) return;
     const std::uint64_t now = now_ns();
     if (requested_from_ == expected_ && now - requested_at_ < 20'000'000) return;
     const auto count = static_cast<std::uint16_t>(std::min<std::uint64_t>(gap_end - expected_, 4096));
-    const Header h = header(Kind::Retransmit, session_, expected_, count);
+    const Header h = header(Kind::Retransmit, epoch_, expected_, count);
     ::sendto(cfd_, &h, sizeof h, 0, reinterpret_cast<const sockaddr*>(&primary_), sizeof primary_);
     ++stats_.requests;
     requested_from_ = expected_, requested_at_ = now;
@@ -368,7 +426,7 @@ class Subscriber {
 
   sockaddr_in primary_;
   int mfd_ = -1, cfd_ = -1;
-  std::uint32_t session_ = 0;
+  std::uint32_t min_epoch_, epoch_ = 0, superseded_by_ = 0;
   std::uint64_t expected_, known_next_ = 0, end_seq_ = 0;
   std::uint64_t requested_from_ = 0, requested_at_ = 0, last_heard_ = 0;
   bool ended_ = false, unavailable_ = false;

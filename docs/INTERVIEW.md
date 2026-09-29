@@ -144,11 +144,44 @@ sent a datagram whenever 25 commands accumulated, before the batch's journal flu
 the backup already had. No acknowledged order was at risk (acknowledgements wait for the backup), but it broke write-ahead
 ordering, and the earlier passing runs had been timing luck. Now the publisher only stages until the journal is flushed.
 
+**What if the primary is only paused, not dead? Split brain?**
+The backup cannot tell the difference, so it promotes itself under epoch 2. Two independent defences stop the old primary
+acknowledging anything the new one lacks. First, it listens to its own multicast group: hearing epoch 2, it fences itself
+(no acknowledgements, sessions closed). Second, with `--replicate-wait`, a primary whose backup stops acknowledging halts
+rather than carrying on alone, which works even if the new primary is silent. The test freezes the primary with `SIGSTOP`
+under load, waits for the promotion, resumes it, and checks both modes: the old primary stops with the expected reason, and
+everything it acknowledged is held by the new primary.
+
+**Can it survive a second failure?**
+Yes: the promoted backup replicates under the next epoch, seeding its retransmission ring from its own journal. A new
+backup that is further behind than the ring is refused explicitly and instead starts from a shipped copy of a journal (the
+journal is the state, because the engine is deterministic), then joins the live stream. The test kills two primaries in a
+row and checks that every acknowledged order survives on the third, and that its book equals a replay of its journal.
+
 **What does this not handle?**
-It runs on one host with loopback multicast. There is one backup, no snapshot for a replica that falls behind the ring, no
-re-replication after a promotion, and no fencing: a primary that is partitioned rather than dead would not know it had been
-replaced, so a real deployment needs leases or an arbiter. If the backup stops acknowledging, the primary waits 500 ms, says
-so, and continues alone (availability over durability, explicitly).
+It runs on one host with loopback multicast and one backup at a time. Failure detection is a timeout, not consensus: there
+is no external arbiter or lease, so safety under a partition rests on the halt rule (which trades availability for safety)
+rather than on a quorum. A production system would use a consensus log or an arbiter.
+
+**How do clients see the book?**
+A level-2 market-data feed: after each committed batch, the new totals of the levels it touched and its trades, in
+sequenced multicast packets, with a full snapshot every N packets. A subscriber that detects a gap rebuilds from the next
+snapshot. Replication retransmits because a replica must never miss a command; market data uses snapshots because there
+are many consumers and none is served individually. The trade-off shows in the test: at 2% loss the subscriber spent most
+of the run waiting for a snapshot, which is why real feeds add a retransmission service for small gaps.
+
+## Testing beyond tests
+
+**How do you know the parsers are safe?**
+libFuzzer, with ASan and UBSan, in CI: the order-entry decoder (anything it accepts must re-encode to the same command),
+journal recovery (structure-aware: valid records followed by a fuzzed damaged tail; the valid prefix must always survive
+recovery), and a differential fuzzer that decodes bytes into command streams and requires the production books and the
+reference book to agree event for event. Coverage guidance finds inputs random testing only hits by luck.
+
+**What does the test suite actually cover?**
+93% of lines and 82% of branches in the engine and infrastructure (Clang source-based coverage over every suite); 100% of
+the matching core's lines. The honest reading: line coverage says code ran, not that its result was checked; the
+differential tests and the Coinbase replay are what check results.
 
 ## The benchmark environment
 

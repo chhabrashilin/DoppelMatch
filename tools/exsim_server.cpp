@@ -12,6 +12,11 @@
 // --sync batch   also fsync every --batch commands
 // --sync every   fsync every command (survives power loss; slow)
 // --drop p       fault injection: skip each original multicast datagram with probability p
+// --epoch N      this primary's epoch (a promoted backup uses the next one; replicas ignore older epochs)
+// --ring-log2 K  retransmission ring of 2^K commands [20]
+// --continue-without-replica   with --replicate-wait: keep serving alone if the backup is lost (default: halt)
+// --md-publish G       public level-2 market data on multicast group G (mdfeed.hpp), recovered by snapshots
+// --md-snapshot-every N  a full snapshot every N incremental packets [500]; --md-drop p: fault injection
 // --trust-client-ids   pass client order ids to the engine unchanged, as before exchange-assigned ids
 //                      (exists only so scripts/e2e_sessions.py can measure the hash attack it prevents)
 
@@ -42,6 +47,7 @@ int main(int argc, char** argv) {
   gc.batch = args.u64("batch", 1000);
   gc.wait_replica = args.has("replicate-wait");
   gc.replica_timeout_ms = args.u64("replica-timeout-ms", 500);
+  gc.halt_on_replica_loss = !args.has("continue-without-replica");
   gc.trust_client_ids = args.has("trust-client-ids");
   if (gc.sync_mode != "os" && gc.sync_mode != "batch" && gc.sync_mode != "every") tools::Args::die("--sync must be os, batch or every");
   if (args.has("cpu")) pin_current_thread(static_cast<int>(args.i64("cpu", 0)));
@@ -85,10 +91,17 @@ int main(int argc, char** argv) {
   std::unique_ptr<seqstream::Publisher> pub;
   if (args.has("publish")) {
     pub = std::make_unique<seqstream::Publisher>(args.str("publish", ""), static_cast<std::uint16_t>(args.u64("control-port", 31002)),
-                                                 20, args.f64("drop", 0.0), args.u64("seed", 1), seq + 1);
+                                                 static_cast<std::uint32_t>(args.u64("ring-log2", 20)), args.f64("drop", 0.0),
+                                                 args.u64("seed", 1), seq + 1, static_cast<std::uint32_t>(args.u64("epoch", 1)));
     gc.publisher = pub.get();
   } else if (gc.wait_replica) {
     tools::Args::die("--replicate-wait needs --publish");
+  }
+  std::unique_ptr<md_feed::Publisher> md;
+  if (args.has("md-publish")) {
+    md = std::make_unique<md_feed::Publisher>(args.str("md-publish", ""), args.u64("md-snapshot-every", 500),
+                                              args.f64("md-drop", 0.0), args.u64("seed", 1) + 1);
+    gc.market_data = md.get();
   }
   std::printf("symbols=%u journal=%s\n", symbols, jpath.c_str());
   return tools::run_gateway(gc, engine, gate, *journal, digest, seq, max_owner + 1, max_order_id + 1);
