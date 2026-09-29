@@ -27,7 +27,7 @@ REST = "https://data-api.binance.vision/api/v3/depth?symbol={S}&limit={n}"
 
 
 def fetch_snapshot(symbol: str, limit: int) -> dict:
-    req = urllib.request.Request(REST.format(S=symbol.upper(), n=limit), headers={"User-Agent": "exchange-sim"})
+    req = urllib.request.Request(REST.format(S=symbol.upper(), n=limit), headers={"User-Agent": "doppelmatch"})
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read())
 

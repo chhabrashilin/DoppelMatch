@@ -7,8 +7,8 @@ Why the system is built the way it is, what was tried, and what the evidence say
 
 **Goals.** A correct price-time priority matching engine whose hot path never allocates; a deterministic,
 replayable event stream; an order-entry gateway that cannot lose an acknowledged command, replicated to a hot backup
-that can take over; evidence that the engine matches the way a real exchange does, order by order; a market-making
-study on top of it that reports what does *not* work as plainly as what does.
+that can take over; evidence that the engine matches the way a real exchange does, order by order; and research on
+top of it that reports negative results alongside positive ones.
 
 **Non-goals.** Multi-venue routing, auctions, derivatives, FIX, cross-machine deployment. Some are listed under
 [Limits](#11-limits-and-next-steps).
@@ -19,13 +19,17 @@ study on top of it that reports what does *not* work as plainly as what does.
                          +---------------------- deterministic core -----------------------+
  client --TCP--> gateway --> sequencer --> journal (write-ahead) --> risk gate --> engine --> events
   (binary)     client ids -> seq, owner, ts   CRC32C, append-only      limits       per-symbol   |
-               exchange ids        |                                                books        v
-                                   |                                                  exec reports (taker and maker)
-                                   +--> UDP multicast (sequenced commands) --> hot backup: same core, own journal
-                                        gap detection, retransmission, acks        promotes itself if the primary dies
+               exchange ids        |                                                books        +--> exec reports
+                                   |                                                             |    (taker and maker)
+                                   |                                                             +--> level-2 market data
+                                   |                                                                  (after commit)
+                                   +--> UDP multicast (sequenced commands, epoch) --> hot backup: same core, own journal
+                                        gap detection, retransmission, acks            promotes itself if the primary
+                                                                                       goes silent; fences the old one
 ```
 
-Everything inside the box is a **pure function of the ordered command stream**. That single property gives, for free:
+Everything inside the box is a **pure function of the ordered command stream**. Four things follow from that one
+property:
 
 - *Crash recovery.* Replay the journal into a fresh engine and you have the pre-crash state, exactly.
 - *Replication.* Send the stream to another process and it has the same state; digests prove it (section 7).
@@ -53,12 +57,14 @@ replicated state machine, a retransmitter, passive replicas), built at the scale
 | Event delivery | `Sink` template parameter | virtual `IEventHandler` | No indirect call per event; an ignored event costs nothing. |
 | Quantities | 64-bit integer lots | 32-bit | Real Coinbase sizes are integer satoshis; 32 bits overflow at 42.9 BTC and real orders are larger. Cost: +4% simulated L1 misses, wall-clock within noise (BENCHMARKS.md). |
 
-### Semantics worth being precise about
+### Matching semantics
 
 - **Trades execute at the resting order's price**, in price then arrival order.
 - **Modify.** Shrinking size at the same price keeps queue priority (it is an in-place amend). A reprice or size
   increase is cancel/replace: it goes to the back of the queue and may trade immediately. Coinbase's feed confirms both
-  rules (section 8).
+  rules (section 8). The re-entered order keeps its owner but not its original flags: it is not post-only, and it uses
+  the book's self-trade mode rather than a per-order override. A venue that rejects a crossing post-only modify would
+  need those flags stored with the order.
 - **FOK** is all-or-nothing and is decided *before* any fill, using level aggregates (or a walk of the queue when
   self-trade prevention is on, because your own resting orders then provide no liquidity or cancel you).
 - **Self-trade prevention** has four modes, chosen per order (the book's mode is the default): off, cancel resting,
@@ -80,7 +86,7 @@ across the whole table: nearly every lookup touched a cold line and a cold page.
 Two fixes, in order of impact:
 
 1. **Locality-preserving hash** (`k ^ (k >> bits)`): ids are issued roughly sequentially, so live orders occupy a
-   compact window of the table whatever its capacity. 2.3x throughput. The trade-off is real and measured: keys crafted
+   compact window of the table whatever its capacity. 2.3x throughput. The cost is measured too: keys crafted
    against the fold degrade lookups 300-500x (767-953 ns vs 1.5-3 ns). This hash is only safe where the *exchange*
    assigns the order ids, and that is now how the gateway works (section 6). (Plain `fmix64` would not have been a
    fix: it is invertible, so an informed attacker can craft collisions for it too.)
@@ -93,8 +99,9 @@ also measured and rejected (+59% and +19% LL misses vs plain records). Wall-cloc
 (their bootstrap intervals overlap), so the default (`AosBook`) rests on the deterministic cache simulation, and the
 other two stay in the suite.
 
-Caveat that applies to all of it: cache numbers come from a simulator (no L2, TLB or prefetcher), and the machine is a
-WSL2 laptop where the hypervisor steals ~6-12% of a pinned core. Ratios within a run are solid; absolute numbers move.
+One caveat covers all of it: cache numbers come from a simulator (no L2, TLB or prefetcher), and the machine is a WSL2
+laptop where the hypervisor took 6-37% of a pinned core depending on the day. Ratios within a run hold up; absolute
+numbers move.
 
 ## 5. Concurrency
 
@@ -119,12 +126,15 @@ Three pinned threads joined by SPSC rings: feed (decode, stamp) -> engine -> mar
   modifies) the owner, but risk decisions depend on both, so the record stores them and the CRC covers them.
 - **Failure handling.** A short final record (crash mid-write) is a *torn tail*: discarded, and recovery truncates the
   file so appends resume cleanly. A record that fails its CRC is *corruption*: reading stops there and everything after
-  it is distrusted, even if it happens to parse.
+  it is distrusted, even if it happens to parse. On the write side, every `fwrite`, `fflush` and `fsync` is checked; if
+  one fails (disk full, I/O error) the gateway stops acknowledging and closes its sessions, the same way a fenced
+  primary does. An earlier version ignored those return codes, so on a full disk it would have acknowledged orders it
+  had not logged. A unit test writes to `/dev/full` to pin this.
 - **Tested:** a real `kill -9` of the server under load, restart with `--recover`, then (1) no acknowledged command is
   missing, (2) the recovered digest equals an independent offline replay, (3) a deliberately truncated tail is
   detected (`scripts/e2e_gateway.sh`).
 - **Sync policy is explicit:** `os` survives a process crash; `batch`/`every` add `fsync` for power loss. The default
-  is the fast one, and the docs say so.
+  is `os`.
 
 **Exchange-assigned order ids** (`client_ids.hpp`). Clients name orders with their own ids; the engine never sees them.
 Each new order gets the next exchange id before it is sequenced, so the journal, the engine and every replica see only
@@ -135,8 +145,8 @@ owner sees its client id, and everyone else sees 0, so counterparties are anonym
 behaviour identical to a run on client ids, which is what lets `exsim_client` still verify its reports byte for byte:
 a duplicate client id of a live order maps to that order's exchange id, so the engine itself rejects the duplicate in
 its usual validation order; and the id of an order that is not live maps to 0, which is never assigned, so the engine
-reports it unknown. `scripts/e2e_sessions.py` measures the effect over TCP: 20,000 colliding client ids cost what
-sequential ids cost through the gateway, and many times more when passed straight to the engine
+reports it unknown. `scripts/e2e_sessions.py` measures the effect over TCP: 40,000 colliding client ids cost what
+sequential ids cost through the gateway, and 39-59x more server CPU when passed straight to the engine
 (`--trust-client-ids`, kept only to show that).
 
 Both sides of a trade now get a report: the taker in response to its order, the maker unsolicited (sequence 0). Before
@@ -152,9 +162,8 @@ The engine is a deterministic state machine, so replicating it means replicating
   as 25 commands accumulated, before the batch's journal flush: after `kill -9`, the backup held commands the dead
   primary's journal had lost. No acknowledged order was affected, but the backup's journal was no longer a prefix of
   the primary's, so the publisher now only stages commands until the journal is flushed. Each datagram names the
-  sequence number of its first command. When idle, the
-  primary sends heartbeats carrying the next sequence number; without them a receiver cannot tell silence from a lost
-  final datagram.
+  sequence number of its first command. When idle, the primary sends heartbeats carrying the next sequence number;
+  without them a receiver cannot tell silence from a lost final datagram.
 - **Recovery.** A replica that sees a jump stashes what arrived early and asks the primary's retransmitter (a unicast
   control socket serving from an in-memory ring of the last 2^20 commands) for exactly the missing range, re-asking
   after 20 ms without progress. Duplicates are ignored, so a retransmission racing the original is harmless. A request
@@ -239,7 +248,8 @@ and the *engine*, which receives only the inputs (new orders, cancels, modifies)
 and every price or size modify is an episode: the engine's trades (makers, prices, sizes, in order) and resting remainder
 are compared with what Coinbase actually did. Periodically the whole engine book is compared with the truth book, order
 by order, in queue order. Over twelve full days (791 million messages) the engine reproduced all 284,539,832 arrivals
-and modifies and all 7,503,266 trades exactly; details in [VALIDATION.md](VALIDATION.md).
+and modifies exactly, including all 4,809,848 that traded, and all 7,503,266 trades; details in
+[VALIDATION.md](VALIDATION.md).
 
 Getting to exact agreement meant learning the feed's rules from the data, each one a divergence first:
 
@@ -267,8 +277,8 @@ real check and this fault injection on the first 5 minutes of a day.
 
 `ocaml/lib/exsim_ref.ml` is the matching rules again, written independently and purely functionally: an immutable book
 (`Map` of price to FIFO list), `apply : t -> command -> t * event list`, and algebraic data types for commands, events,
-reasons and self-trade modes. It is about 300 lines against the C++ engine's hand-tuned data structures, which is the
-point: it is simple enough to check by reading.
+reasons and self-trade modes. It is about 300 lines against the C++ engine's hand-tuned data structures, on purpose:
+it is short enough to check by reading.
 
 - **Expect tests** (`ppx_expect`) pin the full event stream of hand-written scenarios in the source, so a behaviour change
   appears as a readable diff.

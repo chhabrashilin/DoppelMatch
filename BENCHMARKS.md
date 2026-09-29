@@ -1,8 +1,8 @@
 # Benchmarks
 
 Every number here comes from the code in this repository and can be regenerated with
-`scripts/bench.sh` and `scripts/cache_profile.sh`. Where a design choice did not pay off, that is
-reported as measured, not dropped.
+`scripts/bench.sh` and `scripts/cache_profile.sh`. Design choices that did not pay off are reported
+with their numbers, not dropped.
 
 ## Environment and its limits
 
@@ -13,8 +13,8 @@ reported as measured, not dropped.
 | Compiler | GCC 16.2, `-O3 -march=native`, C++20 |
 | Tuning | Threads pinned with `pthread_setaffinity_np`. **No** isolcpus, no fixed clocks, turbo on, on battery/AC as found. |
 
-This machine is a hostile benchmarking environment, and that is measured, not assumed.
-`exsim_pipeline --jitter 10` spins a pinned thread on back-to-back `rdtsc` reads:
+This is a poor machine to benchmark on, and I measured how poor. `exsim_pipeline --jitter 10` spins a
+pinned thread on back-to-back `rdtsc` reads:
 
 ```
 jitter probe: 10.0 s on cpu 4 (pinned: yes)
@@ -181,7 +181,7 @@ campaigns (campaign 2, speedup over `ref`: `aos` 3.11x [2.18, 3.85], `soa` 2.68x
 3.41x [1.60, 3.69]), and the ordering by best-of-N flips between campaigns. The extra D1 misses in
 SoA mostly hit L2, which is cheap. `aos` is the default because it has the fewest *simulated* misses,
 which is deterministic; that is a weaker claim than "fastest", and it is stated as such. The other two
-stay in the suite so nobody has to take the folklore on faith.
+stay in the suite so the comparison can be rerun on any machine.
 
 ### Campaign 2: the same suite on a noisier host (37% of the pinned core lost)
 
@@ -345,10 +345,10 @@ hypervisor again and are not compared.
 
 ## WebAssembly
 
-The same C++ engine, compiled with Emscripten (`-O3`, 62 KB with the module embedded), runs the browser
-UI. In Node it does **7.1 M orders/s** on a private book (500,000 random orders), about a quarter to a
-third of native: WebAssembly has no huge pages, no core pinning and a slower memory model. It is the same
-code, so the gap is the platform, not the algorithm.
+The same C++ engine, compiled with Emscripten (`-O3`, 65 KB with the module embedded), runs the browser
+UI. In Node it does **7.1 to 17.0 M orders/s** on a private book (500,000 random orders) depending on the run,
+below native: WebAssembly has no huge pages, no core pinning and a slower memory model. It is the same code,
+so the gap is the platform, not the algorithm.
 
 ## Replay determinism
 

@@ -16,7 +16,7 @@ OUT=results/baremetal/$(hostname -s)-$(date +%Y%m%d-%H%M).txt
 mkdir -p results/baremetal
 
 {
-  echo "# exchange-sim bare-metal run, $(date -u +%Y-%m-%dT%H:%MZ)"
+  echo "# DoppelMatch bare-metal run, $(date -u +%Y-%m-%dT%H:%MZ)"
   echo "## machine"
   echo "kernel: $(uname -srm)"
   lscpu | grep -E "^(Model name|CPU\(s\)|Thread\(s\) per core|Core\(s\) per socket|Socket\(s\)|L1d|L2|L3|Hypervisor vendor|Virtualization type|CPU max MHz)" || true

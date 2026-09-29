@@ -10,8 +10,8 @@ Three studies, each built on the engine and on data validated against the exchan
 
 # Part 1: passive market making (Binance L2)
 
-**Question.** Can a passive quoting strategy make money on liquid crypto spot books once fills are modeled honestly (queue
-position, latency) and fees are included, and does the Avellaneda-Stoikov (A-S) model beat simpler quoting?
+**Question.** Can a passive quoting strategy make money on liquid crypto spot books once fills account for queue
+position and latency and fees are included, and does the Avellaneda-Stoikov (A-S) model beat simpler quoting?
 
 **Short answer.** No, not on these data. Every strategy loses about 1.3 to 2 basis points of the notional it trades, because
 the fills it gets are disproportionately the ones where the price is about to move against it. A-S is an inventory-control
@@ -36,7 +36,7 @@ depth diffs, every trade, and a REST snapshot every 2 s (websocket opened first,
 The engine's reconstructed book equals the exchange's own snapshot, level for level (price and quantity), at the exact
 sequence point (`lastUpdateId`), with 0 phantom trades and 0 sequence gaps, in every session. The check is shown to be able
 to fail: dropping 1 in 100,000 level updates (6 of 648,000) fails 8 BTC snapshots; 1 in 2,000 fails 441 of 573. Details and
-the two ways it initially failed are in [DESIGN.md section 7](DESIGN.md#7-reconstructing-a-real-exchange-book).
+the two ways it initially failed are in [DESIGN.md section 8](DESIGN.md#8-does-the-engine-match-like-a-real-exchange).
 
 ## Method
 

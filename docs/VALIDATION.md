@@ -4,7 +4,10 @@ A matching engine's unit tests check it against the author's reading of the rule
 exchange: twelve full days of Coinbase Exchange's BTC-USD order-by-order feed (791 million messages), replayed through the
 engine and compared, trade by trade, with what Coinbase actually did.
 
-**Result: 284,539,832 of 284,539,832 arrivals and modifies, and 7,503,266 of 7,503,266 trades, reproduced exactly.**
+**Result: 7,503,266 of 7,503,266 trades reproduced exactly, and 284,539,832 of 284,539,832 arrivals and modifies.**
+Most arrivals simply rest, and reproducing those is easy. The 4,809,848 arrivals and modifies that traded are where the
+matching logic is exercised (priority, partial fills, sweeps across levels, self-trade prevention), and every one of
+them matched Coinbase: the same makers, prices and sizes, in the same order, with the same remainder left resting.
 Every divergence met on the way there turned out to be a rule of the feed or a bug in the replay (both listed below),
 not a matching error in the engine. The engine itself changed twice for this work: quantities became 64-bit (real sizes
 in satoshis overflow 32 bits) and self-trade prevention gained decrement-and-cancel, selectable per order.
@@ -44,21 +47,21 @@ The last inference needs the book at that moment, so the first pass over the fil
 Twelve days, the first of each month from October 2025 to September 2026, one binary, no per-day tuning
 (`results/l3/`, produced by `scripts/summarize_l3.py`):
 
-| day | messages | feed gaps (recovered) | episodes | reproduced exactly | diverged | Coinbase trades | predicted exactly | full-book checks (failed) |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 2025-10-01 | 56,049,823 | 1 (1) | 20,929,642 | 20,929,642 | 0 | 486,910 | 486,910 | 112 (0) |
-| 2025-11-01 | 39,992,754 | 0 | 14,433,050 | 14,433,050 | 0 | 233,833 | 233,833 | 79 (0) |
-| 2025-12-01 | 101,277,262 | 10 (10) | 37,195,766 | 37,195,766 | 0 | 786,118 | 786,118 | 202 (0) |
-| 2026-01-01 | 21,014,690 | 0 | 7,715,830 | 7,715,830 | 0 | 320,115 | 320,115 | 42 (0) |
-| 2026-02-01 | 81,192,370 | 2 (2) | 30,184,925 | 30,184,925 | 0 | 744,183 | 744,183 | 162 (0) |
-| 2026-03-01 | 81,200,901 | 0 | 29,135,676 | 29,135,676 | 0 | 621,229 | 621,229 | 162 (0) |
-| 2026-04-01 | 79,238,887 | 2 (2) | 28,159,155 | 28,159,155 | 0 | 738,670 | 738,670 | 158 (0) |
-| 2026-05-01 | 53,590,545 | 1 (1) | 19,048,354 | 19,048,354 | 0 | 846,726 | 846,726 | 107 (0) |
-| 2026-06-01 | 83,913,766 | 11 (11) | 29,652,716 | 29,652,716 | 0 | 776,578 | 776,578 | 167 (0) |
-| 2026-07-01 | 84,759,322 | 3 (3) | 30,073,362 | 30,073,362 | 0 | 1,003,646 | 1,003,646 | 169 (0) |
-| 2026-08-01 | 42,758,642 | 0 | 14,651,090 | 14,651,090 | 0 | 352,014 | 352,014 | 85 (0) |
-| 2026-09-01 | 66,038,550 | 10 (10) | 23,360,266 | 23,360,266 | 0 | 593,244 | 593,244 | 131 (0) |
-| **all** | **791,027,512** | **40 (40)** | **284,539,832** | **284,539,832** | **0** | **7,503,266** | **7,503,266** | **1,576 (0)** |
+| day | messages | feed gaps (recovered) | episodes | of which traded | reproduced exactly | diverged | Coinbase trades | predicted exactly | full-book checks (failed) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2025-10-01 | 56,049,823 | 1 (1) | 20,929,642 | 298,422 | 20,929,642 | 0 | 486,910 | 486,910 | 112 (0) |
+| 2025-11-01 | 39,992,754 | 0 | 14,433,050 | 165,306 | 14,433,050 | 0 | 233,833 | 233,833 | 79 (0) |
+| 2025-12-01 | 101,277,262 | 10 (10) | 37,195,766 | 472,340 | 37,195,766 | 0 | 786,118 | 786,118 | 202 (0) |
+| 2026-01-01 | 21,014,690 | 0 | 7,715,830 | 243,516 | 7,715,830 | 0 | 320,115 | 320,115 | 42 (0) |
+| 2026-02-01 | 81,192,370 | 2 (2) | 30,184,925 | 411,084 | 30,184,925 | 0 | 744,183 | 744,183 | 162 (0) |
+| 2026-03-01 | 81,200,901 | 0 | 29,135,676 | 356,657 | 29,135,676 | 0 | 621,229 | 621,229 | 162 (0) |
+| 2026-04-01 | 79,238,887 | 2 (2) | 28,159,155 | 373,038 | 28,159,155 | 0 | 738,670 | 738,670 | 158 (0) |
+| 2026-05-01 | 53,590,545 | 1 (1) | 19,048,354 | 668,642 | 19,048,354 | 0 | 846,726 | 846,726 | 107 (0) |
+| 2026-06-01 | 83,913,766 | 11 (11) | 29,652,716 | 497,985 | 29,652,716 | 0 | 776,578 | 776,578 | 167 (0) |
+| 2026-07-01 | 84,759,322 | 3 (3) | 30,073,362 | 702,279 | 30,073,362 | 0 | 1,003,646 | 1,003,646 | 169 (0) |
+| 2026-08-01 | 42,758,642 | 0 | 14,651,090 | 254,322 | 14,651,090 | 0 | 352,014 | 352,014 | 85 (0) |
+| 2026-09-01 | 66,038,550 | 10 (10) | 23,360,266 | 366,257 | 23,360,266 | 0 | 593,244 | 593,244 | 131 (0) |
+| **all** | **791,027,512** | **40 (40)** | **284,539,832** | **4,809,848** | **284,539,832** | **0** | **7,503,266** | **7,503,266** | **1,576 (0)** |
 
 Every one of 284,539,832 arrivals and modifies produced exactly the trades Coinbase printed (same makers, prices,
 sizes, order) and left exactly the resting order Coinbase reported: 243,223,942 resting remainders were checked

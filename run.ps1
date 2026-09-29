@@ -1,4 +1,4 @@
-# Runs exchange-sim from Windows PowerShell by forwarding to the WSL (Linux) build.
+# Runs DoppelMatch from Windows PowerShell by forwarding to the WSL (Linux) build.
 #
 #   .\run.ps1 test
 #   .\run.ps1 demo                     # gen + replay + bench + pipeline, ~1 minute

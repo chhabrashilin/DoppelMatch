@@ -41,4 +41,4 @@ bars (valid): 1,036,605
 
   median spread 0.0013 bps; std of mid return: 1 s 0.71 bps, 10 s 2.46 bps, 60 s 6.14 bps
 
-figure: /mnt/c/Users/chhab/Downloads/Github/chhabrashilin/exchange-sim/docs/img/signals_coinbase.png
+figure: docs/img/signals_coinbase.png

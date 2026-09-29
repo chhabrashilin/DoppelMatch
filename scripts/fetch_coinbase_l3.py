@@ -25,7 +25,7 @@ def fetch_minute(symbol, t, key=None):
                                 "to": (t + dt.timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:00.000Z"),
                                 "filters": filters})
     req = urllib.request.Request(f"https://api.tardis.dev/v1/data-feeds/coinbase?{q}",
-                                 headers={"Accept-Encoding": "gzip", "User-Agent": "exchange-sim"})
+                                 headers={"Accept-Encoding": "gzip", "User-Agent": "doppelmatch"})
     if key:
         req.add_header("Authorization", f"Bearer {key}")
     for attempt in range(8):
