@@ -154,7 +154,7 @@ partition_run() {  # partition_run <announce|silent>
   wait "$CLI" || true
   grep -E "FENCED|REPLICA_LOST.*halting" "$W/r5$mode.p.log" | head -1
   grep -q "reason=$expect" "$W/r5$mode.p.log" && echo "the resumed primary halted ($expect) instead of serving: OK" \
-    || { echo "FAIL: the old primary kept serving after being replaced"; cat "$W/r5$mode.p.log"; exit 1; }
+    || { echo "FAIL: the resumed primary did not stop for the expected reason ($expect)"; cat "$W/r5$mode.p.log"; exit 1; }
   ACKED=$(awk '/^ACKED/ {print $2}' "$W/r5$mode.c.log")
   HELD=$(field seq "$W/r5$mode.r.log")
   [ "$HELD" -ge "$ACKED" ] && echo "no split brain: all $ACKED acknowledged commands are in the new primary ($HELD held): OK" \

@@ -262,6 +262,11 @@ int run_gateway(const GatewayConfig& cfg, Engine& engine, Gate& gate, JournalWri
       if (halted != nullptr) break;
       const std::uint64_t now = seqstream::now_ns();
       if (now - t0 > cfg.replica_timeout_ms * 1'000'000) {
+        // If this process was paused, the timeout can expire before it reads a newer epoch that is already waiting on
+        // the group socket. Drain it once more so a replaced primary reports that it was fenced, not a lost backup.
+        pub->service();
+        fence_check();
+        if (halted != nullptr) break;
         if (cfg.halt_on_replica_loss) {
           halted = "REPLICA_LOST";
           std::printf("REPLICA_LOST seq=%llu acked=%llu: halting, no further acknowledgements\n",
