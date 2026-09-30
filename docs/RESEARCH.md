@@ -168,6 +168,20 @@ pattern (`results/ethusdt_b/`).
 
 7. **A calibrated parameter is a regime, not a constant.** k moved 25x between assets and 2x between two ETH sessions.
 
+## Figures
+
+`scripts/analyze_results.py` draws the same six charts for every session, and `scripts/calibrate_k.py` the fit of k:
+
+| chart | BTCUSDT (30 min) | ETHUSDT (10 min) | ETHUSDT (25 min) |
+|---|---|---|---|
+| PnL split into spread capture and inventory | [btc](img/mm_pnl_decomposition_btcusdt_a.png) | [eth b](img/mm_pnl_decomposition_ethusdt_b.png) | [eth c](img/mm_pnl_decomposition_ethusdt_c.png) |
+| Mid move after a fill (adverse selection) | [btc](img/mm_adverse_selection_btcusdt_a.png) | [eth b](img/mm_adverse_selection_ethusdt_b.png) | [eth c](img/mm_adverse_selection_ethusdt_c.png) |
+| Queue-aware vs optimistic fills | [btc](img/mm_fill_model_btcusdt_a.png) | [eth b](img/mm_fill_model_ethusdt_b.png) | [eth c](img/mm_fill_model_ethusdt_c.png) |
+| Effect of fees | [btc](img/mm_fees_btcusdt_a.png) | [eth b](img/mm_fees_ethusdt_b.png) | [eth c](img/mm_fees_ethusdt_c.png) |
+| Effect of latency | [btc](img/mm_latency_btcusdt_a.png) | [eth b](img/mm_latency_ethusdt_b.png) | [eth c](img/mm_latency_ethusdt_c.png) |
+| PnL and inventory through the session | [btc](img/mm_timeseries_btcusdt_a.png) | [eth b](img/mm_timeseries_ethusdt_b.png) | [eth c](img/mm_timeseries_ethusdt_c.png) |
+| Fill intensity vs quote distance (the fit of k) | [btc](img/k_calibration_btcusdt_a.png) | [eth b](img/k_calibration_ethusdt_b.png) | [eth c](img/k_calibration_ethusdt_c.png) |
+
 ## What this does not show
 
 - **One hour of data, two assets.** The BTC session trended up. A different regime (range-bound, or a volatility spike) could

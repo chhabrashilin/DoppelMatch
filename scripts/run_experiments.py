@@ -8,7 +8,7 @@ Each --data entry is  file:k  where k is that market's Avellaneda-Stoikov decay 
 calibrate_k.py from that same capture. Every cell is an independent, deterministic run of
 `exsim_mmsim --json`; the grid is fully specified below, so every number in the write-up traces to a row.
 """
-import argparse, csv, json, os, subprocess, sys
+import argparse, csv, json, os, subprocess
 from concurrent.futures import ThreadPoolExecutor
 
 # The Avellaneda-Stoikov risk aversion is swept in the dimensionless ratio gamma/k, fixed in advance (not

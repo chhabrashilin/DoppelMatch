@@ -8,7 +8,7 @@ as a mismatch here.
 
     python verify_accounting.py --results results --dataset btcusdt_a [--price-scale 0.01 --qty-scale 1e-5]
 """
-import argparse, glob, json, os, subprocess, sys
+import argparse, os, sys
 import numpy as np
 import pandas as pd
 

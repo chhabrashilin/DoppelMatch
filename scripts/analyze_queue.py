@@ -12,7 +12,7 @@ joined. For those, each rule's predicted fill is compared with the truth:
     i.e. an optimistic backtest).
 Intervals are bootstrap over DAYS (the independent unit), not over probes.
 """
-import argparse, glob, json, os, re
+import argparse, json, os, re
 import numpy as np
 import pandas as pd
 

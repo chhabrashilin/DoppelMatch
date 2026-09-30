@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# CI only reads the repository; the upload of fuzz crash artifacts needs no extra scope.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.name }}
@@ -66,7 +70,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - uses: ocaml/setup-ocaml@v3
+      - uses: ocaml/setup-ocaml@93303b622b2522e4411e295f9e77411a24912ac7  # v3
         with: { ocaml-compiler: "5.2" }
       - run: opam install -y dune ppx_expect ppx_inline_test qcheck-core
       - name: expect tests and property tests
@@ -161,7 +165,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - uses: mymindstorm/setup-emsdk@v15
+      - uses: mymindstorm/setup-emsdk@667eb33f24e84e7f362c16d8d7fff0629a73e15e  # v15
       - uses: actions/setup-node@v5
         with: { node-version: 22 }
       - run: bash scripts/build_wasm.sh
